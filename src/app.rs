@@ -30,6 +30,7 @@ pub enum Modal {
     Model { sel: usize, effort: usize },
     /// `prev` is the theme to restore on esc.
     Theme { sel: usize, prev: usize },
+    Settings { sel: usize },
     Files { sel: usize, scroll: u16 },
     Search { query: Editor, sel: usize },
 }
@@ -123,7 +124,7 @@ fn notify(title: &str, body: &str) {
     }
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
-        "display notification \"{}\" with title \"ctui\" subtitle \"{}\" sound name \"Glass\"",
+        "display notification \"{}\" with title \"ctui\" subtitle \"{}\"",
         esc(body),
         esc(title)
     );
@@ -184,6 +185,7 @@ pub enum SideHit {
     Board,
     Files,
     Reload,
+    Settings,
 }
 
 /// Clicks on split-view panes.
@@ -192,6 +194,8 @@ pub enum PaneHit {
     Split,
     Close(usize),
     Focus(usize),
+    SendQueued(usize),
+    DropQueued(usize),
 }
 
 /// Narrowest main area that still splits into two panes.
@@ -220,6 +224,7 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("model", "pick model and effort  [name]"),
     ("effort", "thinking effort  low|medium|high|xhigh|max|auto"),
     ("files", "files Claude changed, with diffs"),
+    ("settings", "theme, typing effect and sound, notifications, updates"),
     ("theme", "pick a color theme  [name]"),
     ("split", "two sessions side by side  [off]"),
     ("search", "search every conversation"),
@@ -286,7 +291,45 @@ pub struct App {
     limit_warned: HashMap<String, u8>,
     /// A newer ctui was installed on disk; /reload switches to it.
     pub update_ready: Option<String>,
+    pub prefs: Prefs,
+    pub settings_hits: Vec<Rect>,
 }
+
+/// Settings read on every frame, mirrored from config.json.
+#[derive(Clone, Copy)]
+pub struct Prefs {
+    pub typing_effect: bool,
+    pub notifications: bool,
+    pub auto_update: bool,
+}
+
+impl Prefs {
+    fn load() -> Self {
+        let c = store::load_config();
+        Prefs {
+            typing_effect: c.typing_effect.unwrap_or(true),
+            notifications: c.notifications.unwrap_or(true),
+            auto_update: c.auto_update.unwrap_or(true),
+        }
+    }
+
+    fn save(&self) {
+        let mut c = store::load_config();
+        c.typing_effect = Some(self.typing_effect);
+        c.notifications = Some(self.notifications);
+        c.auto_update = Some(self.auto_update);
+        store::save_config(&c);
+    }
+}
+
+/// Rows of the settings panel: (label, hint).
+pub const SETTINGS: &[(&str, &str)] = &[
+    ("Theme", "colors for the whole app"),
+    ("Typing effect", "cursor and fade-in while Claude writes"),
+    ("Notifications", "when Claude finishes or needs you (silent)"),
+    ("Auto-update", "install new ctui releases in the background"),
+];
+
 
 impl App {
     pub fn new(tx: UnboundedSender<AppEvent>, launch_dir: PathBuf, open_new: bool, reloaded: bool) -> Self {
@@ -344,6 +387,8 @@ impl App {
             pane_hits: Vec::new(),
             limit_warned: HashMap::new(),
             update_ready: None,
+            prefs: Prefs::load(),
+            settings_hits: Vec::new(),
         };
         {
             let tx = app.tx.clone();
@@ -351,7 +396,7 @@ impl App {
                 let _ = tx.send(AppEvent::Projects(crate::projects::discover()));
             });
             claude::fetch_catalog(launch_dir.clone(), app.tx.clone());
-            if crate::update::due() {
+            if app.prefs.auto_update && crate::update::due() {
                 app.check_update(false);
             }
         }
@@ -504,6 +549,24 @@ impl App {
     pub fn open_theme_picker(&mut self) {
         let cur = crate::theme::current_index();
         self.open_modal(Modal::Theme { sel: cur, prev: cur });
+    }
+
+    fn notify(&self, title: &str, body: &str) {
+        if self.prefs.notifications {
+            notify(title, body);
+        }
+    }
+
+    fn toggle_setting(&mut self, row: usize) {
+        let p = &mut self.prefs;
+        match row {
+            0 => return self.open_theme_picker(),
+            1 => p.typing_effect = !p.typing_effect,
+            2 => p.notifications = !p.notifications,
+            3 => p.auto_update = !p.auto_update,
+            _ => {}
+        }
+        self.prefs.save();
     }
 
     fn save_theme(&mut self) {
@@ -799,7 +862,7 @@ impl App {
         {
             if away {
                 let (verb, target) = tools::summary(&p.tool_name, &p.input, &s.cwd);
-                notify(&format!("{} needs you", s.name), &format!("wants to {verb} {target}"));
+                self.notify(&format!("{} needs you", s.name), &format!("wants to {verb} {target}"));
             }
         } else if was_busy && !s.busy() {
             if away {
@@ -809,7 +872,7 @@ impl App {
                     _ => None,
                 });
                 let body: String = last.unwrap_or_else(|| "finished".into()).chars().take(120).collect();
-                notify(&format!("{} is done", s.name), &body);
+                self.notify(&format!("{} is done", s.name), &body);
             }
             let (respawn, sid) = (s.respawn, s.sid);
             if i == self.active && self.reaction_now().is_none() {
@@ -841,7 +904,7 @@ impl App {
                 reset_in(l.resets_at, now).map(|r| format!(" · resets in {r}")).unwrap_or_default()
             );
             if !self.term_focused {
-                notify("usage limit", &msg);
+                self.notify("usage limit", &msg);
             }
             self.toast(msg);
         }
@@ -903,10 +966,41 @@ impl App {
 
     // ---- actions ----
 
+    /// Sends queued messages right away (one, or all). Claude Code reads a
+    /// message that arrives mid-turn at its next step, so nothing is interrupted.
+    fn send_queued(&mut self, k: Option<usize>) {
+        let i = self.active;
+        let items: Vec<(String, Value)> = match k {
+            Some(k) => self.sessions[i].queue.remove(k).into_iter().collect(),
+            None => self.sessions[i].queue.drain(..).collect(),
+        };
+        if items.is_empty() {
+            return;
+        }
+        let busy = self.sessions[i].busy();
+        for (text, content) in items {
+            self.send_now(i, &text, content);
+        }
+        if busy {
+            self.toast("sent · Claude reads it at its next step");
+        }
+    }
+
+    /// Pulls the newest queued message back into the editor.
+    fn edit_queued(&mut self) {
+        let i = self.active;
+        if let Some((text, _)) = self.sessions[i].queue.pop_back() {
+            self.editor.set(&text);
+        }
+    }
+
     fn submit(&mut self) {
         let raw = self.editor.take();
         let text = raw.trim();
         if text.is_empty() {
+            if !self.current().queue.is_empty() {
+                self.send_queued(None);
+            }
             return;
         }
         self.popup = None;
@@ -1052,6 +1146,7 @@ impl App {
                 let a = self.active;
                 self.close_pane(a);
             }
+            "settings" | "config" | "prefs" => self.open_modal(Modal::Settings { sel: 0 }),
             "theme" if arg.is_empty() => self.open_theme_picker(),
             "theme" => {
                 if crate::theme::set(arg) {
@@ -1843,6 +1938,11 @@ impl App {
                             self.switch_to(i);
                             self.switched_at = None;
                         }
+                        PaneHit::SendQueued(k) => self.send_queued(Some(k)),
+                        PaneHit::DropQueued(k) => {
+                            let i = self.active;
+                            self.sessions[i].queue.remove(k);
+                        }
                     }
                 }
                 MouseEventKind::Down(crossterm::event::MouseButton::Left)
@@ -1866,6 +1966,12 @@ impl App {
                         } else {
                             self.copy_pending = true;
                         }
+                    }
+                }
+                MouseEventKind::Down(_) if matches!(self.modal, Some(Modal::Settings { .. })) => {
+                    if let Some(row) = self.settings_hits.iter().position(|r| r.contains((m.column, m.row).into())) {
+                        self.modal = Some(Modal::Settings { sel: row });
+                        self.toggle_setting(row);
                     }
                 }
                 MouseEventKind::Down(_) if matches!(self.modal, Some(Modal::Board(_))) => {
@@ -1897,6 +2003,7 @@ impl App {
                         Some(SideHit::Board) => self.open_board(),
                         Some(SideHit::Files) => self.open_files(),
                         Some(SideHit::Reload) => self.reload_pending = true,
+                        Some(SideHit::Settings) => self.open_modal(Modal::Settings { sel: 0 }),
                         None => {}
                     }
                 }
@@ -1944,6 +2051,7 @@ impl App {
                 return self.open_modal(Modal::Search { query: Editor::default(), sel: 0 });
             }
             KeyCode::Char('m') if alt => return self.open_model_picker(),
+            KeyCode::Char('s') if ctrl => return self.open_modal(Modal::Settings { sel: 0 }),
             KeyCode::Char('µ') => return self.open_model_picker(),
             KeyCode::Char('t') if ctrl => {
                 if self.focus == Focus::Transcript {
@@ -2056,6 +2164,10 @@ impl App {
             }
         }
 
+        if k.code == KeyCode::Up && self.editor.is_empty() && !self.current().queue.is_empty() {
+            self.edit_queued();
+            return;
+        }
         let e = &mut self.editor;
         match k.code {
             KeyCode::Enter if shift || alt => e.insert("\n"),
@@ -2203,7 +2315,13 @@ impl App {
         }
         if matches!(
             self.modal,
-            Some(Modal::Model { .. } | Modal::Files { .. } | Modal::Search { .. } | Modal::Theme { .. })
+            Some(
+                Modal::Model { .. }
+                    | Modal::Files { .. }
+                    | Modal::Search { .. }
+                    | Modal::Theme { .. }
+                    | Modal::Settings { .. }
+            )
         ) {
             return self.panel_key(k);
         }
@@ -2219,7 +2337,8 @@ impl App {
             | Modal::Model { .. }
             | Modal::Files { .. }
             | Modal::Search { .. }
-            | Modal::Theme { .. } => {}
+            | Modal::Theme { .. }
+            | Modal::Settings { .. } => {}
             Modal::Help | Modal::Stats | Modal::Agents | Modal::Tutorial { .. } => {
                 self.modal = None;
                 if matches!(k.code, KeyCode::Char(_)) && !ctrl {
@@ -2304,6 +2423,20 @@ impl App {
                 crate::theme::set_index(prev);
             }
             self.modal = None;
+            return;
+        }
+        if let Some(Modal::Settings { sel }) = &mut self.modal {
+            let n = SETTINGS.len();
+            match k.code {
+                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + n - 1) % n,
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => *sel = (*sel + 1) % n,
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
+                    let row = *sel;
+                    self.toggle_setting(row);
+                }
+                KeyCode::Char('q') => self.modal = None,
+                _ => {}
+            }
             return;
         }
         if let Some(Modal::Theme { sel, .. }) = &mut self.modal {

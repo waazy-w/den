@@ -26,7 +26,49 @@ fn rule_line(w: u16) -> Line<'static> {
     Line::from(Span::styled("─".repeat(w as usize), theme::s(theme::rule())))
 }
 
-pub fn draw(buf: &mut Buffer, area: Rect, s: &mut Session, expand_all: bool) {
+/// The tail of text Claude is writing: newest letters fade in from faint and
+/// a soft cursor sits after them. `revealing` = text still being uncovered.
+fn typing_fx(buf: &mut Buffer, area: Rect, top: u16, bottom: u16, revealing: bool) {
+    const TAIL: usize = 16;
+    // Last non-blank cell of the entry's last drawn row.
+    let Some((ex, ey)) = (top..bottom).rev().find_map(|y| {
+        (area.x..area.right()).rev().find(|&x| buf[(x, y)].symbol().trim() != "").map(|x| (x, y))
+    }) else {
+        return;
+    };
+    if revealing {
+        let mut k = 0;
+        'rows: for y in (top..=ey).rev() {
+            let end = if y == ey { ex } else { area.right().saturating_sub(1) };
+            for x in (area.x..=end).rev() {
+                let c = &mut buf[(x, y)];
+                if c.symbol().trim().is_empty() {
+                    continue;
+                }
+                if let ratatui::style::Color::Rgb(r, g, b) = c.fg {
+                    let t = 0.3 + 0.7 * (k as f32 / TAIL as f32);
+                    c.fg = theme::mix(theme::faint_rgb(), (r, g, b), anim::ease_out(t));
+                }
+                k += 1;
+                if k >= TAIL {
+                    break 'rows;
+                }
+            }
+        }
+    }
+    let (cx, cy) = if ex + 2 < area.right() {
+        (ex + 2, ey)
+    } else if ey + 1 < area.bottom() {
+        (area.x + 2, ey + 1)
+    } else {
+        return;
+    };
+    let speed = if revealing { 7.0 } else { 3.0 };
+    let glow = 0.55 + 0.45 * (anim::secs() * speed).sin().abs();
+    buf.set_string(cx, cy, "▍", Style::new().fg(theme::mix(theme::bg_rgb(), theme::accent_rgb(), glow)));
+}
+
+pub fn draw(buf: &mut Buffer, area: Rect, s: &mut Session, expand_all: bool, fx: bool) {
     if area.height == 0 || area.width < 8 {
         return;
     }
@@ -93,6 +135,13 @@ pub fn draw(buf: &mut Buffer, area: Rect, s: &mut Session, expand_all: bool) {
         (t < 1.0).then_some((j, 1.0 - t))
     });
     let mut flash_rows: Option<(u16, u16, f32)> = None;
+    // The reply being written: the last entry while Claude works, or any text still revealing.
+    let last = s.entries.len().checked_sub(1);
+    let writing = last.filter(|&i| {
+        let e = &s.entries[i];
+        matches!(e.item, Item::Assistant(_)) && (e.shown < e.item_len() || s.status == crate::session::Status::Working)
+    });
+    let mut fx_rows: Option<(u16, u16, bool)> = None;
     let top = max_scroll - (s.scroll_pos.round() as usize).min(max_scroll);
 
     let mut y = 0usize;
@@ -125,6 +174,9 @@ pub fn draw(buf: &mut Buffer, area: Rect, s: &mut Session, expand_all: bool) {
             }
             y += 1;
         }
+        if fx && writing == Some(i) && row > start_row {
+            fx_rows = Some((start_row, row, e.shown < e.item_len()));
+        }
         if let Some((j, k)) = flash
             && j == i
             && row > start_row
@@ -147,6 +199,9 @@ pub fn draw(buf: &mut Buffer, area: Rect, s: &mut Session, expand_all: bool) {
     }
     for (r, h, t) in fades {
         theme::fade(buf, Rect::new(area.x, r, w, h), t);
+    }
+    if let Some((a, b, revealing)) = fx_rows {
+        typing_fx(buf, area, a, b, revealing);
     }
     if let Some((r, h, k)) = flash_rows {
         let bg = theme::mix(theme::bg_rgb(), theme::p().sel_bg, anim::ease_out(k));
@@ -461,4 +516,19 @@ pub fn tag_spans(text: &str, base: Style) -> Vec<Span<'static>> {
         out.push(Span::styled(text[last..].to_string(), base));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typing_tail_fades_and_shows_cursor() {
+        let area = Rect::new(0, 0, 30, 3);
+        let mut b = Buffer::empty(area);
+        b.set_string(2, 0, "hello world", Style::new().fg(ratatui::style::Color::Rgb(250, 250, 250)));
+        typing_fx(&mut b, area, 0, 1, true);
+        assert_ne!(b[(12, 0)].fg, ratatui::style::Color::Rgb(250, 250, 250));
+        assert_eq!(b[(14, 0)].symbol(), "▍");
+    }
 }

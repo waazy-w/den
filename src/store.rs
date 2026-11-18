@@ -70,6 +70,12 @@ pub struct Config {
     /// Check GitHub for new releases and install them (default on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
+    /// Cursor and fade-in while Claude writes (default on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing_effect: Option<bool>,
+    /// Desktop notifications when a session finishes or needs you (default on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<bool>,
 }
 
 pub fn load_config() -> Config {

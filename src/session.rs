@@ -500,6 +500,12 @@ impl Session {
     pub fn handle(&mut self, v: &Value) -> Option<Value> {
         let ty = tools::s(v, "type");
         let parent = v.get("parent_tool_use_id").and_then(Value::as_str);
+        // A message sent mid-turn can start another turn after the result; any
+        // new output means Claude is working again.
+        if self.status == Status::Idle && !self.replaying && matches!(ty, "stream_event" | "assistant") {
+            self.status = Status::Working;
+            self.turn_started.get_or_insert_with(Instant::now);
+        }
         match ty {
             "system" => self.on_system(v),
             "stream_event" if parent.is_none() => self.on_stream(v),
@@ -694,6 +700,14 @@ impl Session {
     fn on_task(&mut self, v: &Value) {
         let id = tools::s(v, "tool_use_id");
         if id.is_empty() {
+            return;
+        }
+        // Background Bash commands report through task events too; only
+        // Agent/Task tools are subagents.
+        let is_agent = self.tool_index.get(id).is_none_or(|&i| {
+            matches!(&self.entries[i].item, Item::Tool(t) if matches!(t.name.as_str(), "Agent" | "Task"))
+        });
+        if !is_agent && !self.agents.iter().any(|a| a.id == id) {
             return;
         }
         let sub = tools::s(v, "subtype");
@@ -1266,6 +1280,25 @@ mod tests {
         assert!(s.tests_passed);
         s.handle(&json!({"type":"result","subtype":"success","is_error":false}));
         assert!(s.activity().unwrap().0.starts_with("done"));
+    }
+
+    #[test]
+    fn background_bash_is_not_an_agent() {
+        let mut s = sess();
+        s.user_message("go");
+        s.handle(&json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"sleep 5","run_in_background":true}}]}}));
+        s.handle(&json!({"type":"system","subtype":"task_started","tool_use_id":"b1","description":"Sleep for 5"}));
+        assert!(s.agents.is_empty());
+    }
+
+    #[test]
+    fn output_after_result_means_working_again() {
+        let mut s = sess();
+        s.user_message("one");
+        s.handle(&json!({"type":"result","subtype":"success","is_error":false}));
+        assert_eq!(s.status, Status::Idle);
+        s.handle(&json!({"type":"stream_event","api_message_id":"m2","event":{"type":"message_start"}}));
+        assert_eq!(s.status, Status::Working);
     }
 
     #[test]

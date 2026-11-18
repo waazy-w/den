@@ -75,6 +75,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(crate::app::Modal::Board(b)) = &app.modal {
         app.board_hits = board_hits(area, b, app);
     }
+    app.settings_hits = if matches!(app.modal, Some(crate::app::Modal::Settings { .. })) {
+        panels::settings_rows(area)
+    } else {
+        Vec::new()
+    };
     if let Some(m) = &app.modal {
         let t = anim::ease_out(anim::progress(app.modal_at, anim::OPEN));
         // Dim everything behind the panel so it reads as a layer on top.
@@ -252,7 +257,11 @@ fn draw_sidebar(buf: &mut Buffer, area: Rect, app: &mut App) {
     y = draw_tasks(buf, Rect::new(x, y, inner_w as u16, max_y.saturating_sub(y)), app);
     let foot = area.y + area.height.saturating_sub(1);
     let button_y = foot;
-    let board_y = foot.saturating_sub(1);
+    let projects_y = foot.saturating_sub(1);
+    let settings_y = foot.saturating_sub(2);
+    let update_y = foot.saturating_sub(3);
+    // Topmost footer button; Clawd and the agents sit above it.
+    let board_y = if app.update_ready.is_some() { update_y } else { settings_y };
     let room_top = y + 1;
     let clawd_rows = (board_y.saturating_sub(1 + room_top)).min(companion::H + 3);
     let clawd_top = board_y.saturating_sub(1 + clawd_rows);
@@ -285,9 +294,10 @@ fn draw_sidebar(buf: &mut Buffer, area: Rect, app: &mut App) {
         app.sidebar_rows.push((Rect::new(area.x, by, area.width, 1), hit));
     };
     if let Some(tag) = app.update_ready.clone() {
-        button(board_y.saturating_sub(1), &format!("↑ {tag} ready"), "reload", crate::app::SideHit::Reload);
+        button(update_y, &format!("↑ {tag} ready"), "reload", crate::app::SideHit::Reload);
     }
-    button(board_y, "projects", "^G", crate::app::SideHit::Board);
+    button(settings_y, "settings", "^S", crate::app::SideHit::Settings);
+    button(projects_y, "projects", "^G", crate::app::SideHit::Board);
     button(button_y, "+ new session", "^N", crate::app::SideHit::NewButton);
     for yy in area.y..area.y + area.height {
         buf.set_string(area.x + area.width - 1, yy, "│", theme::s(theme::rule()));
@@ -388,12 +398,18 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
     let visible_rows = rows.len().clamp(1, 8);
     let input_h = visible_rows as u16 + 2;
     let mut approval = approval_lines(s, area.width as usize);
+    let queue_base = approval.len();
+    let qw = area.width as usize;
     for (q, _) in s.queue.iter().take(3) {
         let first = q.lines().next().unwrap_or("");
+        // Leave room on the right for the buttons drawn later.
         approval.push(Line::from(vec![
             Span::styled("  ↳ queued  ", theme::s(theme::accent_soft())),
-            Span::styled(truncate(first, area.width as usize - 14), theme::s(theme::dim())),
+            Span::styled(truncate(first, qw.saturating_sub(12 + 18)), theme::s(theme::dim())),
         ]));
+    }
+    if s.queue.len() > 3 {
+        approval.push(Line::from(Span::styled(format!("    +{} more queued", s.queue.len() - 3), theme::s(theme::faint()))));
     }
     let slide = anim::ease_out(anim::progress(s.perm_since, anim::OPEN));
     let approval_h = (approval.len() as f32 * slide).ceil() as u16;
@@ -418,11 +434,12 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
     }
     let app_text_rect = body;
     let clawd = (app.clawd_mood(), crate::anim::secs(), app.reaction_now());
+    let fx = app.prefs.typing_effect;
     let s = &mut app.sessions[idx];
     if s.entries.is_empty() {
         draw_welcome(f.buffer_mut(), body, s, &label, clawd);
     } else {
-        transcript::draw(f.buffer_mut(), body, s, app.expand_all);
+        transcript::draw(f.buffer_mut(), body, s, app.expand_all, fx);
     }
     let scrolled = s.scroll;
     if mine {
@@ -439,6 +456,22 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
     let skip = approval.len().saturating_sub(approval_h as usize);
     for (i, l) in approval.iter().skip(skip).enumerate() {
         f.buffer_mut().set_line(appr.x, appr.y + i as u16, l, appr.width);
+    }
+    // "send now" and "×" on each queued message.
+    if mine {
+        let n = app.sessions[idx].queue.len().min(3);
+        for k in 0..n {
+            let Some(row) = (queue_base + k).checked_sub(skip) else { continue };
+            let y = appr.y + row as u16;
+            let (sr, dr) = queue_buttons(appr, y, appr.width as usize);
+            let buf = f.buffer_mut();
+            let send_st = if hovered(app.hover, sr) { theme::bold(theme::on_accent()).bg(theme::accent()) } else { theme::s(theme::accent()) };
+            let drop_st = if hovered(app.hover, dr) { theme::bold(theme::err()).bg(theme::hi_bg()) } else { theme::s(theme::faint()) };
+            buf.set_string(sr.x, y, " ⏎ send now ", send_st);
+            buf.set_string(dr.x, y, " × ", drop_st);
+            app.pane_hits.push((sr, crate::app::PaneHit::SendQueued(k)));
+            app.pane_hits.push((dr, crate::app::PaneHit::DropQueued(k)));
+        }
     }
     theme::fade(f.buffer_mut(), appr, slide);
 
@@ -483,6 +516,8 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
     if !mine || app.editor.is_empty() {
         let ph = if !mine {
             "click to type here  ·  ^\\ switch pane"
+        } else if !s.queue.is_empty() {
+            "⏎ send queued now  ·  ↑ edit it  ·  or keep typing"
         } else if !s.permissions.is_empty() {
             "answer the request above"
         } else if s.busy() {
@@ -513,6 +548,14 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
             draw_popup(f, input, app);
         }
     }
+}
+
+/// Where a queued message's "send now" and "×" buttons sit on row `y`.
+fn queue_buttons(area: Rect, y: u16, w: usize) -> (Rect, Rect) {
+    let right = area.x + w as u16;
+    let drop = Rect::new(right.saturating_sub(3), y, 3, 1);
+    let send = Rect::new(right.saturating_sub(3 + 1 + 12), y, 12, 1);
+    (send, drop)
 }
 
 /// Folder name, mode badge and the split/close-pane button.
@@ -763,7 +806,11 @@ fn draw_status(buf: &mut Buffer, area: Rect, app: &App, idx: usize) -> Rect {
         model = format!("{model} · {e}");
     }
     let mw = width(&model) as u16;
-    buf.set_line(area.x, area.y, &Line::from(spans), area.width.saturating_sub(mw + 3));
+    let room = area.width.saturating_sub(mw + 3) as usize;
+    if spans.iter().map(|s| width(&s.content)).sum::<usize>() > room {
+        spans.retain(|s| s.content != " tokens");
+    }
+    buf.set_line(area.x, area.y, &Line::from(spans), room as u16);
     let r = Rect::new(area.x + area.width.saturating_sub(mw + 1), area.y, mw, 1);
     let st = if hovered(app.hover, r) { theme::s(theme::accent()).bg(theme::hi_bg()) } else { theme::s(theme::dim()) };
     buf.set_string(r.x, r.y, model, st);
@@ -1024,6 +1071,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
         Modal::Board(b) => draw_board(f, area, b, app),
         Modal::Model { sel, effort } => panels::model(f, area, app, *sel, *effort),
         Modal::Theme { sel, .. } => panels::theme(f, area, *sel),
+        Modal::Settings { sel } => panels::settings(f, area, app, *sel),
         Modal::Files { sel, scroll } => panels::files(f, area, app, *sel, *scroll),
         Modal::Search { query, sel } => panels::search(f, area, app, query, *sel),
         Modal::Help => {
@@ -1037,6 +1085,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 ("^\\  /split", "two sessions side by side"),
                 ("⌥M  /model", "model and thinking effort"),
                 ("/files", "files Claude changed, with diffs"),
+                ("^S  /settings", "theme, typing effect & sound, updates"),
                 ("/theme", "pick a color theme"),
                 ("⇧tab  /mode", "permission mode · auto mode"),
                 ("drag  /copy", "copy text · copy last reply"),

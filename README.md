@@ -84,7 +84,7 @@ streaming, running tools finish, and pending approvals and queued messages carry
 The sidebar shows what each session is doing (`editing fetch.rs`, `waiting for you`, `done · 2m ago`),
 Claude's task list for the active session, and a `± N files` row that opens the files-changed view
 with diffs (`/files`). When a session finishes or needs approval while you're in another session or
-another app, macOS shows a notification (set `CTUI_NO_NOTIFY=1` to turn them off). Changing effort
+another app, macOS shows a silent notification (turn them off in settings, or `CTUI_NO_NOTIFY=1`). Changing effort
 restarts that session's `claude` (after the current reply) and keeps the conversation.
 
 Commands: `/workspace add|remove|list <path>`, `/cd <path>`, `/reload`, `/style [name]`, `/new [path]`, `/close`, `/rename <name>`, `/clear`, `/model [name]`, `/effort [level]`, `/files`, `/search [text]`, `/mode [auto|plan|acceptEdits|default]`, `/stats`, `/copy`, `/tutorial`, `/help`, `/quit`.
@@ -97,6 +97,9 @@ light, contrast and forest. Your pick is saved; first-time users choose one afte
 
 `^\` (or the **◫ split** button in the header, or `/split`) shows two sessions side by side. `^\`
 again or a click moves between panes; each pane keeps its own draft. **×** closes a pane.
+
+`^S` (or **settings** in the sidebar) toggles the typing effect (a soft cursor and fade-in while
+Claude writes), notifications (silent, when Claude finishes or needs you) and auto-update.
 
 When a usage window passes 80% (and again at 95%) ctui warns you, and the status bar shows when it resets.
 

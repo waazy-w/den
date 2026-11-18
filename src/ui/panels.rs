@@ -283,3 +283,59 @@ pub fn theme(f: &mut Frame, area: Rect, sel: usize) {
     }
     hint(f, inner, "↑↓ preview   ⏎ keep   esc cancel");
 }
+
+fn settings_rect(area: Rect) -> Rect {
+    centered(area, 78, crate::app::SETTINGS.len() as u16 * 2 + 6)
+}
+
+/// Click targets for the settings rows (same geometry as `settings`).
+pub fn settings_rows(area: Rect) -> Vec<Rect> {
+    let r = settings_rect(area);
+    let inner = Rect { x: r.x + 1, y: r.y + 1, width: r.width.saturating_sub(2), height: r.height.saturating_sub(2) };
+    (0..crate::app::SETTINGS.len()).map(|i| Rect::new(inner.x, inner.y + 1 + i as u16 * 2, inner.width, 1)).collect()
+}
+
+pub fn settings(f: &mut Frame, area: Rect, app: &App, sel: usize) {
+    let rect = settings_rect(area);
+    f.render_widget(Clear, rect);
+    let b = modal_block("settings");
+    let inner = b.inner(rect);
+    f.render_widget(b, rect);
+    let p = app.prefs;
+    let rows = settings_rows(area);
+    let buf = f.buffer_mut();
+    let w = inner.width as usize;
+    for (i, ((label, hint), r)) in crate::app::SETTINGS.iter().zip(&rows).enumerate() {
+        let on = i == sel || super::hovered(app.hover, *r);
+        let bg = if on { Style::new().bg(theme::sel_bg()) } else { Style::new() };
+        let value: Span = match i {
+            0 => Span::styled(format!("{} ›", theme::p().name), bg.fg(theme::accent())),
+            _ => {
+                let v = [p.typing_effect, p.notifications, p.auto_update][i - 1];
+                if v {
+                    Span::styled(" ● on ", bg.fg(theme::on_accent()).bg(theme::accent()).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::styled(" ○ off ", bg.fg(theme::dim()).bg(theme::hi_bg()))
+                }
+            }
+        };
+        let vw = width(&value.content);
+        let left = format!(" {label:<15}");
+        let hint = truncate(hint, w.saturating_sub(width(&left) + vw + 6));
+        let pad = w.saturating_sub(2 + width(&left) + width(&hint) + vw + 1);
+        buf.set_line(
+            inner.x,
+            r.y,
+            &Line::from(vec![
+                Span::styled(if i == sel { " ▍" } else { "  " }, bg.fg(theme::accent())),
+                Span::styled(left, if on { bg.fg(theme::text()).add_modifier(Modifier::BOLD) } else { bg.fg(theme::text()) }),
+                Span::styled(hint, bg.fg(theme::faint())),
+                Span::styled(" ".repeat(pad), bg),
+                value,
+                Span::styled(" ", bg),
+            ]),
+            inner.width,
+        );
+    }
+    hint(f, inner, "↑↓ choose   ⏎ / click toggle   esc close");
+}
