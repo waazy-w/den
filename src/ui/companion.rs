@@ -206,7 +206,7 @@ impl Outfit {
 
     pub fn for_date(month: u32, day: u32) -> Option<Outfit> {
         match (month, day) {
-            (11, 20..) | (12, _) => Some(Outfit::Santa),
+            (11, 15..) | (12, _) => Some(Outfit::Santa),
             (1, 1..=7) => Some(Outfit::Party),
             (1, _) | (2, _) | (11, _) => Some(Outfit::Beanie),
             (3..=5, _) => Some(Outfit::Flower),
@@ -380,7 +380,8 @@ mod tests {
     #[test]
     fn outfits_follow_the_calendar() {
         assert_eq!(Outfit::for_date(12, 3), Some(Outfit::Santa));
-        assert_eq!(Outfit::for_date(11, 18), Some(Outfit::Beanie));
+        assert_eq!(Outfit::for_date(11, 18), Some(Outfit::Santa));
+        assert_eq!(Outfit::for_date(11, 3), Some(Outfit::Beanie));
         assert_eq!(Outfit::for_date(1, 1), Some(Outfit::Party));
         assert_eq!(Outfit::for_date(7, 4), Some(Outfit::Shades));
         assert_eq!(Outfit::for_date(10, 31), Some(Outfit::Witch));

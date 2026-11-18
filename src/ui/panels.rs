@@ -253,7 +253,7 @@ pub fn search(f: &mut Frame, area: Rect, app: &App, query: &crate::input::Editor
 
 pub fn theme(f: &mut Frame, area: Rect, sel: usize) {
     let list = theme::PALETTES;
-    let rect = centered(area, 64, list.len() as u16 * 2 + 6);
+    let rect = centered(area, 64, list.len() as u16 + 5);
     f.render_widget(Clear, rect);
     let b = modal_block("theme");
     let inner = b.inner(rect);
@@ -261,7 +261,7 @@ pub fn theme(f: &mut Frame, area: Rect, sel: usize) {
     let buf = f.buffer_mut();
     let w = inner.width as usize;
     for (i, t) in list.iter().enumerate() {
-        let y = inner.y + 1 + i as u16 * 2;
+        let y = inner.y + 1 + i as u16;
         let on = i == sel;
         let bg = if on { Style::new().bg(theme::sel_bg()) } else { Style::new() };
         let c = |x: theme::Rgb| theme::mix(x, x, 1.0);
