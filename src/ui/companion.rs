@@ -146,6 +146,23 @@ pub fn draw(buf: &mut Buffer, area: Rect, mood: Mood, t: f32, react: Option<(Rea
         };
         buf.set_string(x, y0 + 1, sym, st);
     }
+    // Working: a little laptop, lid tilted back, held in front of him.
+    if mood == Mood::Working && wave.is_none() {
+        let lid = theme::mix((0x3F, 0x3F, 0x46), (0x3F, 0x3F, 0x46), 1.0);
+        let base = theme::mix((0xB4, 0xB4, 0xBC), (0xB4, 0xB4, 0xBC), 1.0);
+        let logo = theme::mix((0xE4, 0xE4, 0xE7), (0xE4, 0xE4, 0xE7), 1.0);
+        for dx in 6..=10u16 {
+            buf.set_string(x0 + dx, y0 + 2, " ", Style::new().bg(lid));
+        }
+        for dx in 5..=9u16 {
+            buf.set_string(x0 + dx, y0 + 3, " ", Style::new().bg(lid));
+        }
+        buf.set_string(x0 + 8, y0 + 2, "▪", Style::new().fg(logo).bg(lid));
+        // Keyboard: a thin slab in the top half of the legs row.
+        for dx in 5..=10u16 {
+            buf.set_string(x0 + dx, y0 + 4, "▀", Style::new().fg(base));
+        }
+    }
     // Waving: the right nub raised, flapping between two heights.
     if let Some(high) = wave {
         let x = x0 + W - 1;
