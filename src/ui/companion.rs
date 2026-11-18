@@ -310,24 +310,6 @@ fn draw_outfit(buf: &mut Buffer, x0: u16, y0: u16, o: Outfit) {
     }
 }
 
-/// The sprite as styled lines (for the tutorial card).
-pub fn lines() -> Vec<ratatui::text::Line<'static>> {
-    let area = Rect::new(0, 0, W, H);
-    let mut b = Buffer::empty(area);
-    draw(&mut b, area, Mood::Awake, 1.0, None, None);
-    (0..H)
-        .map(|y| {
-            ratatui::text::Line::from(
-                (0..W)
-                    .map(|x| {
-                        let c = &b[(x, y)];
-                        ratatui::text::Span::styled(c.symbol().to_string(), c.style())
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {

@@ -476,7 +476,10 @@ impl App {
             app.toast("reloaded");
         }
         app.regroup();
-        if !reloaded && !store::load_config().onboarded {
+        // New people get the tour; everyone sees a new version of it once,
+        // even when arriving through /reload.
+        let seen = store::load_config().tour_version.unwrap_or(0);
+        if seen < crate::ui::tutorial::VERSION {
             app.open_modal(Modal::Tutorial { step: 0 });
         }
         app
@@ -543,6 +546,7 @@ impl App {
         let mut c = store::load_config();
         let first = !c.onboarded;
         c.onboarded = true;
+        c.tour_version = Some(crate::ui::tutorial::VERSION);
         let pick_theme = first && c.theme.is_none();
         store::save_config(&c);
         if pick_theme {
@@ -631,6 +635,9 @@ impl App {
             return Some(Duration::from_millis(33));
         }
         // Background subagents keep their timers ticking.
+        if matches!(self.modal, Some(Modal::Tutorial { .. })) {
+            return Some(Duration::from_millis(33));
+        }
         if self.sessions.iter().any(|s| s.agents.iter().any(|a| a.status == crate::session::AgentStatus::Running)) {
             return Some(Duration::from_millis(250));
         }

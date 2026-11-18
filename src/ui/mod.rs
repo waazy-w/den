@@ -915,7 +915,10 @@ fn modal_block(title: &str) -> Block<'_> {
 #[allow(clippy::explicit_counter_loop)]
 fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
     match m {
-        Modal::Tutorial { step } => tutorial::draw(f, area, *step, anim::ease_out(anim::progress(app.step_at, anim::SWITCH))),
+        Modal::Tutorial { step } => {
+            let since = app.step_at.or(app.modal_at).map_or(0.0, |t| t.elapsed().as_secs_f32());
+            tutorial::draw(f, area, *step, anim::ease_out(anim::progress(app.step_at, anim::SWITCH)), since, app.outfit())
+        }
         Modal::Project { query, sel } => {
             let choices = app.project_choices();
             let picks = crate::projects::picker_with(&query.text, &choices, &app.all_workspaces());

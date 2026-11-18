@@ -52,19 +52,51 @@ pub fn config_dir() -> PathBuf {
     config_root().join("den")
 }
 
-/// den used to be called ctui: move its settings over once. A reload snapshot
-/// written by a still-running ctui is picked up even after the move.
+/// den used to be called ctui: bring its settings and sessions over once.
+/// When both folders exist, ctui's sessions are merged into den's list (and
+/// into a pending reload snapshot), so no conversation goes missing.
 pub fn migrate_legacy() {
-    let old = config_root().join("ctui");
-    let new = config_dir();
+    migrate_from(&config_root().join("ctui"), &config_dir());
+}
+
+fn migrate_from(old: &std::path::Path, new: &std::path::Path) {
+    use serde_json::Value;
     if !old.is_dir() {
         return;
     }
     if !new.exists() {
-        let _ = std::fs::rename(&old, &new);
-    } else if old.join("reload.json").exists() {
+        let _ = std::fs::rename(old, new);
+        return;
+    }
+    if old.join("reload.json").exists() && !new.join("reload.json").exists() {
         let _ = std::fs::rename(old.join("reload.json"), new.join("reload.json"));
     }
+    let read = |p: &std::path::Path| std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    let old_sessions: Vec<Value> = read(&old.join("sessions.json")).and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let id = |s: &Value| s.get("claude_id").and_then(Value::as_str).map(String::from);
+    let merge = |list: &mut Vec<Value>| {
+        let have: Vec<String> = list.iter().filter_map(id).collect();
+        for s in &old_sessions {
+            if id(s).is_some_and(|i| !have.contains(&i)) {
+                list.push(s.clone());
+            }
+        }
+    };
+    let mut sessions: Vec<Value> = read(&new.join("sessions.json")).and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    merge(&mut sessions);
+    if let Ok(json) = serde_json::to_string_pretty(&sessions) {
+        let _ = std::fs::write(new.join("sessions.json"), json);
+    }
+    if let Some(mut snap) = read(&new.join("reload.json"))
+        && let Some(list) = snap.get_mut("sessions").and_then(Value::as_array_mut)
+    {
+        merge(list);
+        if let Ok(json) = serde_json::to_string(&snap) {
+            let _ = std::fs::write(new.join("reload.json"), json);
+        }
+    }
+    // Done once: keep the old folder around, renamed, in case it's needed.
+    let _ = std::fs::rename(old, old.with_file_name("ctui.migrated"));
 }
 
 fn state_file() -> PathBuf {
@@ -75,6 +107,9 @@ fn state_file() -> PathBuf {
 pub struct Config {
     #[serde(default)]
     pub onboarded: bool,
+    /// Which version of the tour was last seen (a new version shows once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tour_version: Option<u32>,
     /// Folders whose sub-folders are projects (e.g. ~/code).
     #[serde(default)]
     pub workspaces: Vec<PathBuf>,
@@ -152,7 +187,9 @@ pub fn save_lifetime(l: &Lifetime) {
 #[derive(Serialize, Deserialize, Default)]
 pub struct Snapshot {
     pub sessions: Vec<Saved>,
+    #[serde(default)]
     pub active: usize,
+    #[serde(default)]
     pub draft: String,
     #[serde(default)]
     pub history: Vec<String>,
@@ -169,8 +206,17 @@ pub fn save_snapshot(s: &Snapshot) -> bool {
 
 pub fn take_snapshot() -> Option<Snapshot> {
     let text = std::fs::read_to_string(snapshot_file()).ok()?;
-    let _ = std::fs::remove_file(snapshot_file());
-    serde_json::from_str(&text).ok()
+    match serde_json::from_str(&text) {
+        Ok(s) => {
+            let _ = std::fs::remove_file(snapshot_file());
+            Some(s)
+        }
+        Err(_) => {
+            // Unreadable (e.g. written by another version): keep it, never lose it.
+            let _ = std::fs::rename(snapshot_file(), config_dir().join("reload.unread.json"));
+            None
+        }
+    }
 }
 
 pub fn load() -> Vec<Saved> {
@@ -204,4 +250,28 @@ pub fn transcript(claude_id: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_sessions_merge_into_den() {
+        let base = std::env::temp_dir().join(format!("den-migrate-{}", std::process::id()));
+        let (old, new) = (base.join("ctui"), base.join("den"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("sessions.json"), r#"[{"name":"big chat","cwd":"/x","claude_id":"A"},{"name":"dup","cwd":"/x","claude_id":"B"}]"#).unwrap();
+        std::fs::write(new.join("sessions.json"), r#"[{"name":"small","cwd":"/x","claude_id":"B"}]"#).unwrap();
+        std::fs::write(new.join("reload.json"), r#"{"sessions":[{"name":"small","cwd":"/x","claude_id":"B"}],"active":0,"draft":""}"#).unwrap();
+        migrate_from(&old, &new);
+        let s: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(new.join("sessions.json")).unwrap()).unwrap();
+        let ids: Vec<&str> = s.as_array().unwrap().iter().map(|x| x["claude_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["B", "A"]);
+        let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(new.join("reload.json")).unwrap()).unwrap();
+        assert_eq!(r["sessions"].as_array().unwrap().len(), 2);
+        assert!(!old.exists() && base.join("ctui.migrated").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

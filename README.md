@@ -1,8 +1,15 @@
+<p align="center"><img src="assets/brand/den-icon-256.png" width="112" alt="den"></p>
+
 # den
 
 A clean, fast terminal UI for Claude Code, written in Rust. It drives your installed `claude` CLI
 over its streaming JSON protocol, so your login, settings, MCP servers, skills, hooks and
 permissions all work as usual.
+
+<p align="center">
+  <a href="assets/brand/den-demo.mp4"><img src="assets/brand/den-demo.gif" width="760" alt="den running: tasks, edits and tests live; every project in one sidebar"></a>
+  <br><sub><a href="assets/brand/den-demo.mp4">▶ watch the 20-second video</a> · brand kit in <a href="assets/brand">assets/brand</a></sub>
+</p>
 
 ## Install
 
