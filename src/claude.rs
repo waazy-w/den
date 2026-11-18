@@ -19,6 +19,8 @@ pub enum AppEvent {
     Catalog(Value),
     /// Result of an update check; `bool` = the user asked for it.
     Update(crate::update::Outcome, bool),
+    /// A `!command` finished: session, entry, output, exit code.
+    Shell(usize, usize, String, i32),
 }
 
 /// A running `claude` process and the tasks pumping its pipes.
@@ -74,6 +76,8 @@ pub struct Spawn<'a> {
     pub mode: Option<&'a str>,
     pub style: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// den binary to run as Claude Code's Bash hook (output squeezer).
+    pub squeeze_hook: Option<&'a str>,
 }
 
 /// Per-user, owner-only log folder (`$XDG_CACHE_HOME/den/logs` or ~/.cache/den/logs).
@@ -174,8 +178,19 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
     if let Some(m) = opts.model {
         cmd.args(["--model", m]);
     }
+    let mut settings = serde_json::Map::new();
     if let Some(st) = opts.style {
-        cmd.args(["--settings", &json!({"outputStyle": st}).to_string()]);
+        settings.insert("outputStyle".into(), json!(st));
+    }
+    if let Some(exe) = opts.squeeze_hook {
+        let quoted = format!("'{}'", exe.replace('\'', "'\\''"));
+        settings.insert(
+            "hooks".into(),
+            json!({"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": format!("{quoted} hook")}]}]}),
+        );
+    }
+    if !settings.is_empty() {
+        cmd.args(["--settings", &Value::Object(settings).to_string()]);
     }
     if let Some(e) = opts.effort {
         cmd.args(["--effort", e]);

@@ -309,6 +309,8 @@ pub struct Session {
     pub jump_pending: bool,
     /// Unsent input, kept while another session has the editor.
     pub draft: String,
+    /// Output of `!` shell commands, attached to the next message to Claude.
+    pub shell_context: Vec<String>,
 }
 
 impl Session {
@@ -363,6 +365,7 @@ impl Session {
             jump: None,
             jump_pending: false,
             draft: String::new(),
+            shell_context: Vec::new(),
         }
     }
 
@@ -374,6 +377,37 @@ impl Session {
         let born = (!self.replaying).then(Instant::now);
         self.entries.push(Entry { item, rev: 0, expanded: false, cache: None, born, shown: usize::MAX });
         self.entries.len() - 1
+    }
+
+    /// Adds a running `!command` row; returns its entry index.
+    pub fn start_shell(&mut self, cmd: &str) -> usize {
+        let i = self.push(Item::Tool(Tool {
+            name: "Shell".into(),
+            input: json!({"command": cmd}),
+            result: None,
+            state: ToolState::Running,
+            started: Instant::now(),
+            took: None,
+            sub_steps: 0,
+            waiting: false,
+            finished_at: None,
+        }));
+        self.entries[i].expanded = true;
+        self.scroll = 0;
+        i
+    }
+
+    /// Fills in a finished `!command` and queues its output for Claude.
+    pub fn finish_shell(&mut self, idx: usize, output: &str, code: i32) {
+        let Some(Item::Tool(t)) = self.entries.get_mut(idx).map(|e| &mut e.item) else { return };
+        let cmd = tools::s(&t.input, "command").to_string();
+        let (out, _) = crate::squeeze::squeeze(output, "(not saved)");
+        t.result = Some(if out.is_empty() { "(no output)".into() } else { out.clone() });
+        t.state = if code == 0 { ToolState::Ok } else { ToolState::Err };
+        t.took = Some(t.started.elapsed());
+        t.finished_at = Some(Instant::now());
+        self.touch(idx);
+        self.shell_context.push(format!("I ran `{cmd}` in my shell (exit code {code}):\n```\n{out}\n```"));
     }
 
     fn touch(&mut self, idx: usize) {

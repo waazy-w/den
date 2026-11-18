@@ -94,6 +94,8 @@ pub struct Config {
     pub notifications: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outfit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squeeze: Option<bool>,
 }
 
 pub fn load_config() -> Config {

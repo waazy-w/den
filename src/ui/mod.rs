@@ -494,6 +494,9 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
     } else {
         theme::faint()
     };
+    let shell = mine && app.editor.text.starts_with('!');
+    let mode = if shell { Some(((0xF4, 0x72, 0xB6), "!", "shell mode")) } else { mode };
+    let border = if shell { theme::mix((0xF4, 0x72, 0xB6), (0xF4, 0x72, 0xB6), 1.0) } else { border };
     let mut block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -506,7 +509,13 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
                 Span::styled(format!("{icon} {label}"), Style::new().fg(c).add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
             ]))
-            .title(Line::from(Span::styled(" ⇧tab to change ", theme::s(theme::faint()))).right_aligned());
+            .title(
+                Line::from(Span::styled(
+                    if shell { " runs here · output goes to Claude " } else { " ⇧tab to change " },
+                    theme::s(theme::faint()),
+                ))
+                .right_aligned(),
+            );
     }
     let inner = block.inner(input);
     block.render(input, f.buffer_mut());
@@ -1157,7 +1166,7 @@ fn apply_selection(buf: &mut Buffer, app: &mut App) {
 fn draw_stats(f: &mut Frame, area: Rect, app: &App) {
     use crate::session::Usage;
     let rows_n = app.sessions.len().min(10) as u16;
-    let rect = centered(area, 86, rows_n + 15);
+    let rect = centered(area, 86, rows_n + 17);
     f.render_widget(Clear, rect);
     let b = modal_block("stats");
     let inner = b.inner(rect);
@@ -1211,6 +1220,16 @@ fn draw_stats(f: &mut Frame, area: Rect, app: &App) {
         buf.set_line(x, y, &Line::from(l), w);
         y += 2;
     }
+    let (runs, before, after) = crate::squeeze::savings();
+    let saved = if runs > 0 {
+        format!("~{} tokens saved across {runs} commands ({:.0}% smaller)", fmt_tokens(before.saturating_sub(after) / 4), 100.0 * (1.0 - after as f64 / before.max(1) as f64))
+    } else if crate::squeeze::rtk_active() {
+        "RTK is squeezing command output for you".to_string()
+    } else {
+        "nothing squeezed yet".to_string()
+    };
+    buf.set_line(x, y, &Line::from(vec![Span::styled("squeezer     ", theme::bold(theme::accent())), Span::styled(saved, theme::s(theme::text()))]), w);
+    y += 2;
     let total = life.tok_in + life.tok_out;
     let avg = if life.turns > 0 { life.cost / life.turns as f64 } else { 0.0 };
     buf.set_line(

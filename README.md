@@ -49,6 +49,16 @@ the `^N` picker; type a new name there to create the folder and start a session 
 The bottom rows show context, tokens, time worked and cost, plus your plan usage windows
 (5-hour and weekly) with time until reset.
 
+Start a line with `!` to run it in your shell (in the session's folder): the output shows in the
+conversation and is attached to your next message, so Claude sees it too.
+
+**Token squeezer.** Build, install and test commands (`cargo`, `npm`, `pytest`, …) that your Claude
+Code permission rules already allow are run through `den x`, which strips colors and progress bars,
+collapses repeats and cuts huge logs to the start, the end and every error line (full output saved to
+`~/.cache/den/out/`). Commands your rules don't cover are left alone, so you never get extra
+permission prompts. `/stats` shows the savings; toggle it in settings. If you use RTK, den leaves
+that job to RTK.
+
 Long pastes collapse to `[Pasted text #1 +40 lines]` and images (drag a file in, or `^V` with a
 screenshot on the clipboard) become `[Image #1]`; the full content is still sent. Messages typed
 while Claude works are queued and sent when the turn ends.

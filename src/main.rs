@@ -6,6 +6,7 @@ mod input;
 mod notify;
 mod projects;
 mod session;
+mod squeeze;
 mod store;
 mod theme;
 mod tools;
@@ -106,6 +107,13 @@ fn link_new_name() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Fast paths used by Claude Code's Bash hook; no terminal, no config.
+    let argv: Vec<String> = std::env::args().collect();
+    match argv.get(1).map(String::as_str) {
+        Some("hook") => std::process::exit(squeeze::hook()),
+        Some("x") => std::process::exit(squeeze::run(&argv[2..])),
+        _ => {}
+    }
     store::migrate_legacy();
     let opts = parse_args()?;
     link_new_name();

@@ -280,6 +280,8 @@ pub struct App {
     pub update_ready: Option<String>,
     pub prefs: Prefs,
     outfit_today: Option<crate::ui::companion::Outfit>,
+    /// den's own path, for the output-squeezing hook (None when RTK does that job).
+    squeeze_hook: Option<String>,
     pub settings_hits: Vec<Rect>,
 }
 
@@ -290,6 +292,7 @@ pub struct Prefs {
     pub notifications: bool,
     pub auto_update: bool,
     pub outfit: bool,
+    pub squeeze: bool,
 }
 
 impl Prefs {
@@ -300,6 +303,7 @@ impl Prefs {
             notifications: c.notifications.unwrap_or(true),
             auto_update: c.auto_update.unwrap_or(true),
             outfit: c.outfit.unwrap_or(true),
+            squeeze: c.squeeze.unwrap_or(true),
         }
     }
 
@@ -309,6 +313,7 @@ impl Prefs {
         c.notifications = Some(self.notifications);
         c.auto_update = Some(self.auto_update);
         c.outfit = Some(self.outfit);
+        c.squeeze = Some(self.squeeze);
         store::save_config(&c);
     }
 }
@@ -320,6 +325,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Notifications", "when Claude finishes or needs you (silent)"),
     ("Auto-update", "install new den releases in the background"),
     ("Seasonal outfit", "Santa hat in December, shades in summer…"),
+    ("Squeeze output", "trim noisy command output to save tokens"),
 ];
 
 
@@ -381,6 +387,10 @@ impl App {
             update_ready: None,
             prefs: Prefs::load(),
             outfit_today: crate::ui::companion::Outfit::today(),
+            squeeze_hook: (!crate::squeeze::rtk_active())
+                .then(|| std::env::current_exe().ok())
+                .flatten()
+                .map(|p| p.to_string_lossy().into_owned()),
             settings_hits: Vec::new(),
         };
         {
@@ -558,6 +568,7 @@ impl App {
             2 => p.notifications = !p.notifications,
             3 => p.auto_update = !p.auto_update,
             4 => p.outfit = !p.outfit,
+            5 => p.squeeze = !p.squeeze,
             _ => {}
         }
         self.prefs.save();
@@ -807,6 +818,11 @@ impl App {
                 s.status = crate::session::Status::Idle;
             }
             AppEvent::Projects(list) => self.recent_projects = list,
+            AppEvent::Shell(sid, idx, text, code) => {
+                if let Some(i) = self.idx_of(sid) {
+                    self.sessions[i].finish_shell(idx, &text, code);
+                }
+            }
             AppEvent::Update(outcome, asked) => {
                 use crate::update::Outcome;
                 match outcome {
@@ -933,6 +949,7 @@ impl App {
                 mode: Some(s.mode.as_str()),
                 style: Some(s.style.as_str()),
                 effort: s.effort.as_deref(),
+                squeeze_hook: self.squeeze_hook.as_deref().filter(|_| self.prefs.squeeze),
             },
             self.tx.clone(),
         );
@@ -1007,6 +1024,11 @@ impl App {
         {
             return;
         }
+        if let Some(cmd) = text.strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()) {
+            let i = self.active;
+            self.run_shell(i, cmd);
+            return;
+        }
         let i = self.active;
         let content = match self.build_content(text) {
             Ok(c) => c,
@@ -1022,7 +1044,49 @@ impl App {
         self.send_now(i, text, content);
     }
 
+    /// Runs `!command` in the user's shell, in the session's folder.
+    fn run_shell(&mut self, i: usize, cmd: &str) {
+        let s = &mut self.sessions[i];
+        let idx = s.start_shell(cmd);
+        let (sid, cwd, cmd) = (s.sid, s.cwd.clone(), cmd.to_string());
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let out = tokio::process::Command::new(shell)
+                .arg("-c")
+                .arg(&cmd)
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .output()
+                .await;
+            let (text, code) = match out {
+                Ok(o) => {
+                    let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+                    t.push_str(&String::from_utf8_lossy(&o.stderr));
+                    (t, o.status.code().unwrap_or(1))
+                }
+                Err(e) => (format!("couldn't run: {e}"), 127),
+            };
+            let _ = tx.send(AppEvent::Shell(sid, idx, text, code));
+        });
+    }
+
     fn send_now(&mut self, i: usize, text: &str, content: Value) {
+        // Output of earlier `!commands` rides along with this message.
+        let content = if self.sessions[i].shell_context.is_empty() {
+            content
+        } else {
+            let prefix = std::mem::take(&mut self.sessions[i].shell_context).join("\n\n") + "\n\n";
+            match content {
+                Value::String(t) => Value::String(prefix + &t),
+                Value::Array(mut blocks) => {
+                    blocks.insert(0, json!({"type": "text", "text": prefix}));
+                    Value::Array(blocks)
+                }
+                other => other,
+            }
+        };
         let fresh = !self.procs.contains_key(&self.sessions[i].sid);
         self.sessions[i].user_message(text);
         if !self.ensure_proc(i) {
