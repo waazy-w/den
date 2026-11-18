@@ -274,6 +274,9 @@ struct Rules {
 fn load_rules(cwd: &Path) -> Rules {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let files = [
+        // Organization policy (can only add restrictions here).
+        PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"),
+        PathBuf::from("/etc/claude-code/managed-settings.json"),
         home.join(".claude/settings.json"),
         home.join(".claude/settings.local.json"),
         cwd.join(".claude/settings.json"),
@@ -375,7 +378,8 @@ fn decide(v: &Value, exe: &str) -> Option<Value> {
     if mode == "bypassPermissions" {
         return Some(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}));
     }
-    if risky(cmd) {
+    // Plan mode runs nothing; other modes keep Claude Code's own judgment.
+    if !matches!(mode, "default" | "acceptEdits" | "auto") || risky(cmd) {
         return None;
     }
     let cwd = PathBuf::from(v["cwd"].as_str().unwrap_or("."));
@@ -551,6 +555,7 @@ mod tests {
         assert!(risky("cat a > ~/.bashrc && cargo build"));
         assert!(risky("cargo build $(evil)"));
         assert!(!risky("cargo test 2>&1"));
+        assert!(decide(&input("cargo build", "plan"), "den").is_none());
         // bypassPermissions always squeezes.
         let out = decide(&input("cargo build", "bypassPermissions"), "den").unwrap();
         assert_eq!(out["hookSpecificOutput"]["updatedInput"]["command"], "den x cargo build");
