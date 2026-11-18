@@ -213,6 +213,7 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("files", "files Claude changed, with diffs"),
     ("settings", "theme, typing effect, notifications, updates"),
     ("theme", "pick a color theme  [name]"),
+    ("plugin", "install and manage Claude Code plugins  list|install|marketplace add …"),
     ("split", "two sessions side by side  [off]"),
     ("search", "search every conversation"),
     ("mode", "permission mode  default|acceptEdits|plan|auto"),
@@ -629,6 +630,10 @@ impl App {
         if busy {
             return Some(Duration::from_millis(33));
         }
+        // Background subagents keep their timers ticking.
+        if self.sessions.iter().any(|s| s.agents.iter().any(|a| a.status == crate::session::AgentStatus::Running)) {
+            return Some(Duration::from_millis(250));
+        }
         // Clawd blinks and glances; stop once he's in deep sleep.
         (self.idle_secs() < crate::ui::companion::DEEP_SLEEP_AFTER).then_some(Duration::from_millis(150))
     }
@@ -821,6 +826,15 @@ impl App {
             AppEvent::Shell(sid, idx, text, code) => {
                 if let Some(i) = self.idx_of(sid) {
                     self.sessions[i].finish_shell(idx, &text, code);
+                    // A plugin changed: restart claude (conversation kept) so it loads.
+                    if self.sessions[i].plugin_cmd.take() == Some(idx) && code == 0 {
+                        if self.sessions[i].busy() {
+                            self.sessions[i].respawn = true;
+                        } else if self.procs.remove(&sid).is_some() {
+                            self.sessions[i].reset_process_state();
+                        }
+                        self.sessions[i].note("plugins updated · Claude picks them up on your next message", NoteKind::Info);
+                    }
                 }
             }
             AppEvent::Update(outcome, asked) => {
@@ -1199,6 +1213,19 @@ impl App {
                 self.set_effort(e);
             }
             "files" | "diff" => self.open_files(),
+            "plugin" | "plugins" => {
+                // Claude Code's /plugin menu only works in its own screen; its
+                // command-line twin does the same job.
+                let args = if arg.is_empty() { "list" } else { arg };
+                let i = self.active;
+                let changes = ["install", "i ", "uninstall", "remove", "enable", "disable", "update", "marketplace add"]
+                    .iter()
+                    .any(|w| args.starts_with(w));
+                self.run_shell(i, &format!("claude plugin {args}"));
+                if changes {
+                    self.sessions[i].plugin_cmd = self.sessions[i].entries.len().checked_sub(1);
+                }
+            }
             "split" if matches!(arg, "off" | "close") => {
                 let a = self.active;
                 self.close_pane(a);

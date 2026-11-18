@@ -202,6 +202,9 @@ pub struct Agent {
     pub finished: Option<Instant>,
     pub tools: usize,
     pub tokens: u64,
+    /// Launched in the background: its tool result only means "started", and
+    /// Claude Code's task notification says when it's really done.
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +314,8 @@ pub struct Session {
     pub draft: String,
     /// Output of `!` shell commands, attached to the next message to Claude.
     pub shell_context: Vec<String>,
+    /// Entry of a running `/plugin` command; a success restarts claude.
+    pub plugin_cmd: Option<usize>,
 }
 
 impl Session {
@@ -366,6 +371,7 @@ impl Session {
             jump_pending: false,
             draft: String::new(),
             shell_context: Vec::new(),
+            plugin_cmd: None,
         }
     }
 
@@ -407,6 +413,9 @@ impl Session {
         t.took = Some(t.started.elapsed());
         t.finished_at = Some(Instant::now());
         self.touch(idx);
+        if self.plugin_cmd == Some(idx) {
+            return;
+        }
         self.shell_context.push(format!("I ran `{cmd}` in my shell (exit code {code}):\n```\n{out}\n```"));
     }
 
@@ -492,6 +501,12 @@ impl Session {
         self.thinking = false;
         self.turn_started = None;
         self.stop_running_tools(ToolState::Stopped);
+        for a in &mut self.agents {
+            if a.status == AgentStatus::Running {
+                a.status = AgentStatus::Failed;
+                a.finished = Some(Instant::now());
+            }
+        }
     }
 
     fn stop_running_tools(&mut self, state: ToolState) {
@@ -727,6 +742,7 @@ impl Session {
             finished: None,
             tools: 0,
             tokens: 0,
+            background: false,
         });
         self.agents.last_mut().unwrap()
     }
@@ -738,9 +754,11 @@ impl Session {
         }
         // Background Bash commands report through task events too; only
         // Agent/Task tools are subagents.
-        let is_agent = self.tool_index.get(id).is_none_or(|&i| {
-            matches!(&self.entries[i].item, Item::Tool(t) if matches!(t.name.as_str(), "Agent" | "Task"))
-        });
+        let in_subagent = self.agents.iter().any(|a| a.log.iter().any(|l| matches!(l, AgentLine::Tool { id: t, .. } if t == id)));
+        let is_agent = !in_subagent
+            && self.tool_index.get(id).is_none_or(|&i| {
+                matches!(&self.entries[i].item, Item::Tool(t) if matches!(t.name.as_str(), "Agent" | "Task"))
+            });
         if !is_agent && !self.agents.iter().any(|a| a.id == id) {
             return;
         }
@@ -854,14 +872,21 @@ impl Session {
                 {
                     todo.id = n;
                 }
+                let launched = !self.replaying
+                    && matches!(name.as_str(), "Agent" | "Task")
+                    && text.starts_with("Async agent launched");
                 let Item::Tool(t) = &mut self.entries[i].item else { continue };
                 t.result = Some(text);
                 let is_err = t.state == ToolState::Err;
                 if ok {
                     self.record_change(&name, &input);
                 }
-                if let Some(a) = self.agents.iter_mut().find(|a| a.id == id)
+                if launched {
+                    // Still running in the background; the task notification ends it.
+                    self.agent_mut(id).background = true;
+                } else if let Some(a) = self.agents.iter_mut().find(|a| a.id == id)
                     && a.status == AgentStatus::Running
+                    && !a.background
                 {
                     a.status = if is_err { AgentStatus::Failed } else { AgentStatus::Done };
                     a.finished = Some(Instant::now());
@@ -1314,6 +1339,28 @@ mod tests {
         assert!(s.tests_passed);
         s.handle(&json!({"type":"result","subtype":"success","is_error":false}));
         assert!(s.activity().unwrap().0.starts_with("done"));
+    }
+
+    #[test]
+    fn background_agents_run_until_notified() {
+        let mut s = sess();
+        s.user_message("go");
+        tool(&mut s, "A1", "Agent", json!({"description":"Build video","subagent_type":"fork"}), "Async agent launched successfully. (internal)");
+        assert_eq!(s.agents[0].status, AgentStatus::Running);
+        s.handle(&json!({"type":"system","subtype":"task_progress","tool_use_id":"A1","description":"Rendering"}));
+        assert_eq!(s.agents[0].status, AgentStatus::Running);
+        s.handle(&json!({"type":"system","subtype":"task_notification","tool_use_id":"A1","status":"completed"}));
+        assert_eq!(s.agents[0].status, AgentStatus::Done);
+    }
+
+    #[test]
+    fn subagent_background_bash_is_not_an_agent() {
+        let mut s = sess();
+        s.user_message("go");
+        tool(&mut s, "A1", "Agent", json!({"description":"x"}), "Async agent launched successfully.");
+        s.handle(&json!({"type":"assistant","parent_tool_use_id":"A1","message":{"id":"x","content":[{"type":"tool_use","id":"sb","name":"Bash","input":{"command":"sleep 12","run_in_background":true}}]}}));
+        s.handle(&json!({"type":"system","subtype":"task_started","tool_use_id":"sb","description":"Sleep for 12"}));
+        assert_eq!(s.agents.len(), 1);
     }
 
     #[test]
