@@ -224,7 +224,7 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("model", "pick model and effort  [name]"),
     ("effort", "thinking effort  low|medium|high|xhigh|max|auto"),
     ("files", "files Claude changed, with diffs"),
-    ("settings", "theme, typing effect and sound, notifications, updates"),
+    ("settings", "theme, typing effect, notifications, updates"),
     ("theme", "pick a color theme  [name]"),
     ("split", "two sessions side by side  [off]"),
     ("search", "search every conversation"),

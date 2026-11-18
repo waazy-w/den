@@ -1085,7 +1085,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 ("^\\  /split", "two sessions side by side"),
                 ("⌥M  /model", "model and thinking effort"),
                 ("/files", "files Claude changed, with diffs"),
-                ("^S  /settings", "theme, typing effect & sound, updates"),
+                ("^S  /settings", "theme, typing effect, notifications"),
                 ("/theme", "pick a color theme"),
                 ("⇧tab  /mode", "permission mode · auto mode"),
                 ("drag  /copy", "copy text · copy last reply"),
