@@ -22,6 +22,8 @@ use wrap::{width, wrap};
 
 const SIDEBAR_W: u16 = 28;
 const HEADER_H: u16 = 1;
+/// Widest a conversation pane gets; beyond this lines get hard to read.
+const MAX_PANE_W: u16 = 150;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -386,6 +388,12 @@ fn draw_tasks(buf: &mut Buffer, area: Rect, app: &mut App) -> u16 {
 /// One conversation pane: header, transcript, approvals, input and status.
 /// `idx` is the session shown; only the active one owns the input.
 fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
+    // On very wide screens keep the conversation a readable column, centered.
+    let area = if area.width > MAX_PANE_W {
+        Rect { x: area.x + (area.width - MAX_PANE_W) / 2, width: MAX_PANE_W, ..area }
+    } else {
+        area
+    };
     let area = Rect { x: area.x + 2, width: area.width.saturating_sub(3), ..area };
     if area.width < 10 || area.height < 6 {
         return;
