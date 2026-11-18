@@ -27,10 +27,10 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   gh release download -R "$REPO" -p "$asset" -O "$tmp" --clobber
 elif [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
   token="${GH_TOKEN:-$GITHUB_TOKEN}"
-  api=$(curl -fsSL -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/releases/latest" |
+  api=$(printf 'Authorization: Bearer %s\n' "$token" | curl -fsSL -H @- "https://api.github.com/repos/$REPO/releases/latest" |
     tr ',' '\n' | grep -B3 "\"name\": *\"$asset\"" | grep '"url"' | head -1 | cut -d'"' -f4)
   [ -n "$api" ] || { echo "no $asset in the latest release" >&2; exit 1; }
-  curl -fSL --progress-bar -H "Authorization: Bearer $token" -H "Accept: application/octet-stream" -o "$tmp" "$api"
+  printf 'Authorization: Bearer %s\n' "$token" | curl -fSL --progress-bar -H @- -H "Accept: application/octet-stream" -o "$tmp" "$api"
 elif curl -fsSL -o "$tmp" "$url" 2>/dev/null; then
   :
 else

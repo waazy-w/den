@@ -71,6 +71,29 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
         .map_err(|e| if e.is_empty() { "download failed".into() } else { e })
 }
 
+/// curl with the auth header fed through stdin (`-H @-`), so the token never
+/// shows up in the process list.
+fn curl_auth(token: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let mut child = Command::new("curl")
+        .args(["-fsSL", "--max-time", "120", "-H", "User-Agent: ctui-updater", "-H", "@-"])
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "Authorization: Bearer {token}");
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let e = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if e.is_empty() { "download failed".into() } else { e });
+    }
+    Ok(out.stdout)
+}
+
 /// How to reach the (possibly private) repo: the GitHub CLI's login, a
 /// token in the environment, or plain HTTPS for a public repo.
 enum Source {
@@ -97,9 +120,7 @@ fn latest(src: &Source) -> Result<(String, Option<String>), String> {
             let out = run_cmd(Command::new("gh").args(["release", "view", "-R", REPO, "--json", "tagName,assets"]))?;
             serde_json::from_slice(&out).map_err(|e| e.to_string())?
         }
-        Source::Token(t) => serde_json::from_slice(&curl(&[
-            "-H",
-            &format!("Authorization: Bearer {t}"),
+        Source::Token(t) => serde_json::from_slice(&curl_auth(t, &[
             "-H",
             "Accept: application/vnd.github+json",
             &format!("https://api.github.com/repos/{REPO}/releases/latest"),
@@ -138,9 +159,7 @@ fn download(src: &Source, tag: &str, asset: &str, dest: &Path) -> Result<(), Str
     match src {
         Source::Gh => run_cmd(Command::new("gh").args(["release", "download", tag, "-R", REPO, "-p", asset, "-O", &d, "--clobber"]))
             .map(|_| ()),
-        Source::Token(t) => curl(&[
-            "-H",
-            &format!("Authorization: Bearer {t}"),
+        Source::Token(t) => curl_auth(t, &[
             "-H",
             "Accept: application/octet-stream",
             "-o",

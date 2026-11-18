@@ -76,9 +76,22 @@ pub struct Spawn<'a> {
     pub effort: Option<&'a str>,
 }
 
+/// Per-user, owner-only log folder (`$XDG_CACHE_HOME/ctui/logs` or ~/.cache/ctui/logs).
+fn log_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(".cache")
+    });
+    let dir = base.join("ctui").join("logs");
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    dir
+}
+
 fn log_path(sid: usize) -> PathBuf {
-    let dir = std::env::temp_dir().join("ctui-logs");
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = log_dir();
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
     dir.join(format!("claude-{sid}-{stamp}.log"))
 }
@@ -175,7 +188,16 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
         cmd.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
     }
     let log = log_path(opts.sid);
-    let err_file = std::fs::File::create(&log).context("couldn't create claude log file")?;
+    let err_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&log)
+            .context("couldn't create claude log file")?
+    };
     cmd.current_dir(opts.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
