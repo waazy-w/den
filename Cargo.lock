@@ -260,24 +260,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "futures-util",
- "ignore",
- "libc",
- "pulldown-cmark",
- "ratatui",
- "serde",
- "serde_json",
- "tokio",
- "unicode-segmentation",
- "unicode-width",
-]
-
-[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -316,6 +298,24 @@ name = "deltae"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5729f5117e208430e437df2f4843f5e5952997175992d1414f94c57d61e270b4"
+
+[[package]]
+name = "den"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "futures-util",
+ "ignore",
+ "libc",
+ "pulldown-cmark",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "unicode-segmentation",
+ "unicode-width",
+]
 
 [[package]]
 name = "deranged"

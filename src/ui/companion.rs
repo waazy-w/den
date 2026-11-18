@@ -31,7 +31,7 @@ pub enum Mood {
 }
 
 pub fn mood(busy: bool, needs_you: bool, idle_secs: f32) -> Mood {
-    let nap = std::env::var("CTUI_NAP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(SLEEP_AFTER);
+    let nap = std::env::var("DEN_NAP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(SLEEP_AFTER);
     if needs_you {
         Mood::Alert
     } else if busy {

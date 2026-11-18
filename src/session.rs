@@ -521,7 +521,7 @@ impl Session {
             "control_request" => return self.on_control(v),
             "control_response" => {
                 let r = &v["response"];
-                if tools::s(r, "request_id").starts_with("ctui-init") {
+                if tools::s(r, "request_id").starts_with("den-init") || tools::s(r, "request_id").starts_with("ctui-init") {
                     let cmds = parse_commands(&r["response"]);
                     if !cmds.is_empty() {
                         self.commands = cmds;
@@ -1055,7 +1055,7 @@ impl Session {
         }
         Some(json!({
             "type": "control_response",
-            "response": {"subtype": "error", "request_id": rid, "error": "not supported by ctui"}
+            "response": {"subtype": "error", "request_id": rid, "error": "not supported by den"}
         }))
     }
 

@@ -41,21 +41,21 @@ fn parse_args() -> Result<Opts> {
         match a.as_str() {
             "-h" | "--help" => {
                 println!(
-                    "ctui — a clean terminal UI for Claude Code\n\n\
-                     usage: ctui [dir] [--no-mouse]\n\n\
+                    "den — a clean terminal UI for Claude Code\n\n\
+                     usage: den [dir] [--no-mouse]\n\n\
                      Opens your saved sessions; with [dir], also starts a new session there.\n\
                      --no-mouse  keep native terminal text selection (disables wheel scroll)\n\
-                     ctui update  install the newest release now\n\n\
-                     env: CTUI_CLAUDE_BIN  path to the claude binary (default: claude)"
+                     den update  install the newest release now\n\n\
+                     env: DEN_CLAUDE_BIN  path to the claude binary (default: claude)"
                 );
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("ctui {}", env!("CARGO_PKG_VERSION"));
+                println!("den {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "update" | "--update" if !std::path::Path::new(&a).is_dir() => {
-                println!("ctui {} · checking github.com/{} …", update::VERSION, update::REPO);
+                println!("den {} · checking github.com/{} …", update::VERSION, update::REPO);
                 match update::run() {
                     update::Outcome::UpToDate => println!("already up to date"),
                     update::Outcome::Installed(t) => println!("installed {t}"),
@@ -87,9 +87,22 @@ fn restore_extras(mouse: bool) {
     }
 }
 
+/// Installs from before the rename run as `ctui`; add a `den` beside it.
+fn link_new_name() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    if exe.file_name().is_some_and(|n| n == "ctui") {
+        let den = exe.with_file_name("den");
+        if !den.exists() {
+            let _ = std::os::unix::fs::symlink(&exe, &den);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    store::migrate_legacy();
     let opts = parse_args()?;
+    link_new_name();
     theme::init();
 
     let mut terminal = ratatui::init();
@@ -124,7 +137,7 @@ async fn main() -> Result<()> {
     ratatui::restore();
     if let Ok(true) = result {
         use std::os::unix::process::CommandExt;
-        // On Linux a self-update leaves "/path/ctui (deleted)"; run the new file.
+        // On Linux a self-update leaves "/path/den (deleted)"; run the new file.
         let exe = std::env::current_exe()?;
         let exe = match exe.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
             Some(p) => PathBuf::from(p),

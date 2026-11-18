@@ -1,5 +1,5 @@
 //! Self-update from GitHub Releases, through the GitHub CLI's login (the repo
-//! is private), a GH_TOKEN, or plain `curl` if the repo is public. ctui needs
+//! is private), a GH_TOKEN, or plain `curl` if the repo is public. den needs
 //! no TLS stack of its own. The new binary replaces the running one on disk;
 //! `/reload` (or the next launch) switches to it.
 
@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
-pub const REPO: &str = match option_env!("CTUI_REPO") {
+pub const REPO: &str = match option_env!("DEN_REPO") {
     Some(r) => r,
-    None => "waazy-w/ctui",
+    None => "waazy-w/den",
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How often the background check runs.
@@ -22,9 +22,9 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// Release asset for this machine, e.g. `ctui-aarch64-macos`.
+/// Release asset for this machine, e.g. `den-aarch64-macos`.
 pub fn asset_name() -> String {
-    format!("ctui-{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+    format!("den-{}-{}", std::env::consts::ARCH, std::env::consts::OS)
 }
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
@@ -44,7 +44,7 @@ fn stamp_file() -> PathBuf {
 
 /// True when the background check is due (and allowed).
 pub fn due() -> bool {
-    if std::env::var_os("CTUI_NO_UPDATE").is_some() || crate::store::load_config().auto_update == Some(false) {
+    if std::env::var_os("DEN_NO_UPDATE").is_some() || crate::store::load_config().auto_update == Some(false) {
         return false;
     }
     // Development builds update through cargo, not here.
@@ -67,7 +67,7 @@ fn run_cmd(cmd: &mut Command) -> Result<Vec<u8>, String> {
 }
 
 fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
-    run_cmd(Command::new("curl").args(["-fsSL", "--max-time", "120", "-H", "User-Agent: ctui-updater"]).args(args))
+    run_cmd(Command::new("curl").args(["-fsSL", "--max-time", "120", "-H", "User-Agent: den-updater"]).args(args))
         .map_err(|e| if e.is_empty() { "download failed".into() } else { e })
 }
 
@@ -76,7 +76,7 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
 fn curl_auth(token: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     use std::io::Write;
     let mut child = Command::new("curl")
-        .args(["-fsSL", "--max-time", "120", "-H", "User-Agent: ctui-updater", "-H", "@-"])
+        .args(["-fsSL", "--max-time", "120", "-H", "User-Agent: den-updater", "-H", "@-"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -173,7 +173,7 @@ fn download(src: &Source, tag: &str, asset: &str, dest: &Path) -> Result<(), Str
 
 /// Downloads the release next to `exe`, checks it runs, then swaps it in.
 fn install(src: &Source, tag: &str, asset: &str, exe: &Path) -> Result<(), String> {
-    let tmp = exe.with_file_name(format!(".ctui-update-{}", std::process::id()));
+    let tmp = exe.with_file_name(format!(".den-update-{}", std::process::id()));
     let result = (|| {
         download(src, tag, asset, &tmp)?;
         #[cfg(unix)]
@@ -230,6 +230,6 @@ mod tests {
         assert!(!newer("v0.1.0", "0.1.0"));
         assert!(!newer("v0.1.0-beta", "0.1.0"));
         assert!(!newer("garbage", "0.1.0"));
-        assert!(asset_name().starts_with("ctui-"));
+        assert!(asset_name().starts_with("den-"));
     }
 }

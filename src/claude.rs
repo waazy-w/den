@@ -40,7 +40,7 @@ pub struct Proc {
     stdout_dup: RawFd,
 }
 
-/// What a reloaded ctui needs to keep talking to a still-running `claude`.
+/// What a reloaded den needs to keep talking to a still-running `claude`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Handoff {
     pub pid: u32,
@@ -76,12 +76,12 @@ pub struct Spawn<'a> {
     pub effort: Option<&'a str>,
 }
 
-/// Per-user, owner-only log folder (`$XDG_CACHE_HOME/ctui/logs` or ~/.cache/ctui/logs).
+/// Per-user, owner-only log folder (`$XDG_CACHE_HOME/den/logs` or ~/.cache/den/logs).
 fn log_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| {
         std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(".cache")
     });
-    let dir = base.join("ctui").join("logs");
+    let dir = base.join("den").join("logs");
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
@@ -152,7 +152,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(mut w: W, mut rx: mpsc::UnboundedRece
 }
 
 pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Proc> {
-    let bin = std::env::var("CTUI_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+    let bin = std::env::var("DEN_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
     let mut cmd = Command::new(bin);
     cmd.args([
         "-p",
@@ -183,7 +183,7 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
     if let Some(m) = opts.mode.filter(|m| *m != "default") {
         cmd.args(["--permission-mode", m]);
     }
-    // Headless Claude Code hides its task list tools; ctui shows the list.
+    // Headless Claude Code hides its task list tools; den shows the list.
     if std::env::var_os("CLAUDE_CODE_ENABLE_TODO_TOOLS").is_none() {
         cmd.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
     }
@@ -337,13 +337,13 @@ impl Proc {
     }
 
     pub fn control(&self, request: Value) {
-        let id = format!("ctui-{}", REQ.fetch_add(1, Ordering::Relaxed));
+        let id = format!("den-{}", REQ.fetch_add(1, Ordering::Relaxed));
         self.send(json!({"type": "control_request", "request_id": id, "request": request}));
     }
 
-    /// Asks for the command/model catalog; answered with a `ctui-init` control_response.
+    /// Asks for the command/model catalog; answered with a `den-init` control_response.
     pub fn initialize(&self) {
-        let id = format!("ctui-init-{}", REQ.fetch_add(1, Ordering::Relaxed));
+        let id = format!("den-init-{}", REQ.fetch_add(1, Ordering::Relaxed));
         self.send(json!({"type": "control_request", "request_id": id, "request": {"subtype": "initialize"}}));
     }
 
@@ -366,7 +366,7 @@ impl Proc {
 /// Starts a short-lived `claude` just to read its command catalog.
 pub fn fetch_catalog(cwd: std::path::PathBuf, events: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
-        let bin = std::env::var("CTUI_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+        let bin = std::env::var("DEN_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
         let Ok(mut child) = Command::new(bin)
             .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
             .current_dir(&cwd)
@@ -379,7 +379,7 @@ pub fn fetch_catalog(cwd: std::path::PathBuf, events: mpsc::UnboundedSender<AppE
             return;
         };
         let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else { return };
-        let req = json!({"type": "control_request", "request_id": "ctui-init-catalog", "request": {"subtype": "initialize"}});
+        let req = json!({"type": "control_request", "request_id": "den-init-catalog", "request": {"subtype": "initialize"}});
         if stdin.write_all(format!("{req}\n").as_bytes()).await.is_err() {
             return;
         }

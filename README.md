@@ -1,4 +1,4 @@
-# ctui
+# den
 
 A clean, fast terminal UI for Claude Code, written in Rust. It drives your installed `claude` CLI
 over its streaming JSON protocol, so your login, settings, MCP servers, skills, hooks and
@@ -11,22 +11,22 @@ You need [Claude Code](https://docs.claude.com/en/docs/claude-code) installed an
 [GitHub CLI](https://cli.github.com) logged in (`brew install gh && gh auth login`). Then, on macOS or Linux:
 
 ```sh
-gh api repos/waazy-w/ctui/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
-ctui            # restore saved sessions (or start one here)
-ctui ~/code/api # also open a new session in that directory
+gh api repos/waazy-w/den/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+den            # restore saved sessions (or start one here)
+den ~/code/api # also open a new session in that directory
 ```
 
-Windows: run it inside [WSL](https://learn.microsoft.com/windows/wsl/install) (ctui needs a Unix terminal).
+Windows: run it inside [WSL](https://learn.microsoft.com/windows/wsl/install) (den needs a Unix terminal).
 
-**Updates are automatic.** Every few hours ctui checks GitHub (through your `gh` login) for a new release, installs it in the
+**Updates are automatic.** Every few hours den checks GitHub (through your `gh` login) for a new release, installs it in the
 background and tells you; `/reload` switches to it without stopping anything Claude is doing.
-`/update` or `ctui update` checks right now. Turn it off with `"auto_update": false` in
-`~/.config/ctui/config.json` or `CTUI_NO_UPDATE=1`.
+`/update` or `den update` checks right now. Turn it off with `"auto_update": false` in
+`~/.config/den/config.json` or `DEN_NO_UPDATE=1`.
 
 From source: `cargo install --path .`
 
-`--no-mouse` turns off in-app mouse handling (native terminal selection, no wheel scroll). `CTUI_CLAUDE_BIN` overrides
-the `claude` binary path. Sessions are saved to `~/.config/ctui/sessions.json`; transcripts are
+`--no-mouse` turns off in-app mouse handling (native terminal selection, no wheel scroll). `DEN_CLAUDE_BIN` overrides
+the `claude` binary path. Sessions are saved to `~/.config/den/sessions.json`; transcripts are
 read back from Claude Code's own history, and a restored session resumes on your next message.
 
 On first launch a short tour walks through the basics; `/tutorial` replays it.
@@ -76,15 +76,15 @@ while Claude works are queued and sent when the turn ends.
 | `@` / `/` | file mention / command palette |
 
 Hover a session in the sidebar and click its `×` to delete it (Claude Code keeps the transcript).
-`/reload` restarts ctui in place (picking up a newly installed build) without interrupting Claude:
-running `claude` processes keep working and the new ctui reattaches to their pipes, so replies keep
+`/reload` restarts den in place (picking up a newly installed build) without interrupting Claude:
+running `claude` processes keep working and the new den reattaches to their pipes, so replies keep
 streaming, running tools finish, and pending approvals and queued messages carry over.
-`/style` sets how much Claude explains; ctui sessions default to Claude Code's `default` style.
+`/style` sets how much Claude explains; den sessions default to Claude Code's `default` style.
 
 The sidebar shows what each session is doing (`editing fetch.rs`, `waiting for you`, `done · 2m ago`),
 Claude's task list for the active session, and a `± N files` row that opens the files-changed view
 with diffs (`/files`). When a session finishes or needs approval while you're in another session or
-another app, macOS shows a silent notification (turn them off in settings, or `CTUI_NO_NOTIFY=1`). Changing effort
+another app, macOS shows a silent notification (turn them off in settings, or `DEN_NO_NOTIFY=1`). Changing effort
 restarts that session's `claude` (after the current reply) and keeps the conversation.
 
 Commands: `/workspace add|remove|list <path>`, `/cd <path>`, `/reload`, `/style [name]`, `/new [path]`, `/close`, `/rename <name>`, `/clear`, `/model [name]`, `/effort [level]`, `/files`, `/search [text]`, `/mode [auto|plan|acceptEdits|default]`, `/stats`, `/copy`, `/tutorial`, `/help`, `/quit`.
@@ -101,7 +101,7 @@ again or a click moves between panes; each pane keeps its own draft. **×** clos
 `^S` (or **settings** in the sidebar) toggles the typing effect (a soft cursor and fade-in while
 Claude writes), notifications (silent, when Claude finishes or needs you) and auto-update.
 
-When a usage window passes 80% (and again at 95%) ctui warns you, and the status bar shows when it resets.
+When a usage window passes 80% (and again at 95%) den warns you, and the status bar shows when it resets.
 
 ## Releasing
 
@@ -112,7 +112,7 @@ git tag v0.2.0 && git push origin main v0.2.0
 ```
 
 GitHub Actions builds macOS (Apple Silicon, Intel) and Linux (x86_64, arm64) binaries and
-publishes the release; everyone's ctui picks it up on its next check.
+publishes the release; everyone's den picks it up on its next check.
 
 ## Layout
 

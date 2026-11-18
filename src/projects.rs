@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn resolves_slug_against_filesystem() {
-        let base = std::env::temp_dir().join("ctui slug test").join("my.app");
+        let base = std::env::temp_dir().join("den slug test").join("my.app");
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
         let slug: String = base.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();

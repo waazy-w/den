@@ -110,7 +110,7 @@ fn demo_done() -> Vec<Line<'static>> {
 
 const ALL: [Step; STEPS] = [
     Step {
-        title: "Welcome to ctui",
+        title: "Welcome to den",
         body: "A calm, fast home for Claude Code. Same Claude, same login, settings, tools and permissions. Just a cleaner view.",
         demo: demo_welcome,
     },

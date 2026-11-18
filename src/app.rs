@@ -117,14 +117,14 @@ pub fn search_hits(sessions: &[Session], q: &str) -> Vec<Hit> {
     out
 }
 
-/// Shows a macOS notification (no-op elsewhere or with CTUI_NO_NOTIFY set).
+/// Shows a macOS notification (no-op elsewhere or with DEN_NO_NOTIFY set).
 fn notify(title: &str, body: &str) {
-    if std::env::var_os("CTUI_NO_NOTIFY").is_some() || !cfg!(target_os = "macos") {
+    if std::env::var_os("DEN_NO_NOTIFY").is_some() || !cfg!(target_os = "macos") {
         return;
     }
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
-        "display notification \"{}\" with title \"ctui\" subtitle \"{}\"",
+        "display notification \"{}\" with title \"den\" subtitle \"{}\"",
         esc(body),
         esc(title)
     );
@@ -215,8 +215,8 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("cd", "jump into a folder  <path>"),
     ("workspace", "add a folder of projects  add|remove|list <path>"),
     ("style", "how much Claude explains  default|Explanatory|Concise"),
-    ("reload", "restart ctui, keep every session"),
-    ("update", "install the newest ctui release"),
+    ("reload", "restart den, keep every session"),
+    ("update", "install the newest den release"),
     ("new", "new session  [path]"),
     ("close", "close this session"),
     ("rename", "rename this session"),
@@ -234,7 +234,7 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("copy", "copy the last reply"),
     ("help", "keys and commands"),
     ("tutorial", "replay the intro tour"),
-    ("quit", "exit ctui"),
+    ("quit", "exit den"),
 ];
 
 pub struct App {
@@ -289,7 +289,7 @@ pub struct App {
     pub pane_hits: Vec<(Rect, PaneHit)>,
     /// Highest warning level (1 = 80%, 2 = 95%) already shown per limit window.
     limit_warned: HashMap<String, u8>,
-    /// A newer ctui was installed on disk; /reload switches to it.
+    /// A newer den was installed on disk; /reload switches to it.
     pub update_ready: Option<String>,
     pub prefs: Prefs,
     pub settings_hits: Vec<Rect>,
@@ -327,7 +327,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Theme", "colors for the whole app"),
     ("Typing effect", "cursor and fade-in while Claude writes"),
     ("Notifications", "when Claude finishes or needs you (silent)"),
-    ("Auto-update", "install new ctui releases in the background"),
+    ("Auto-update", "install new den releases in the background"),
 ];
 
 
@@ -683,7 +683,7 @@ impl App {
         self.reload_pending
     }
 
-    /// Hands every running `claude` over to the next ctui and writes the snapshot.
+    /// Hands every running `claude` over to the next den and writes the snapshot.
     /// `rx` is drained after readers stop so no received event is lost.
     pub async fn write_snapshot(&mut self, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> bool {
         let mut handoffs = HashMap::new();
@@ -813,11 +813,11 @@ impl App {
                 use crate::update::Outcome;
                 match outcome {
                     Outcome::Installed(tag) => {
-                        self.toast(format!("ctui {tag} installed · /reload to switch (nothing stops)"));
+                        self.toast(format!("den {tag} installed · /reload to switch (nothing stops)"));
                         self.update_ready = Some(tag);
                     }
                     Outcome::UpToDate if asked => {
-                        self.toast(format!("ctui {} is the latest", crate::update::VERSION));
+                        self.toast(format!("den {} is the latest", crate::update::VERSION));
                     }
                     Outcome::Failed(e) if asked => self.toast(format!("update failed: {e}")),
                     _ => {}
@@ -2594,7 +2594,7 @@ pub fn display_dir(p: &Path) -> String {
 
 /// Saves an image on the macOS clipboard to a temp PNG.
 fn clipboard_image() -> Option<PathBuf> {
-    let dir = std::env::temp_dir().join("ctui-images");
+    let dir = std::env::temp_dir().join("den-images");
     std::fs::create_dir_all(&dir).ok()?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
     let path = dir.join(format!("clipboard-{stamp}.png"));

@@ -44,11 +44,27 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
+fn config_root() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
+}
+
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".config"))
-        .join("ctui")
+    config_root().join("den")
+}
+
+/// den used to be called ctui: move its settings over once. A reload snapshot
+/// written by a still-running ctui is picked up even after the move.
+pub fn migrate_legacy() {
+    let old = config_root().join("ctui");
+    let new = config_dir();
+    if !old.is_dir() {
+        return;
+    }
+    if !new.exists() {
+        let _ = std::fs::rename(&old, &new);
+    } else if old.join("reload.json").exists() {
+        let _ = std::fs::rename(old.join("reload.json"), new.join("reload.json"));
+    }
 }
 
 fn state_file() -> PathBuf {
