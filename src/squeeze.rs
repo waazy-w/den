@@ -21,8 +21,6 @@ const NOISY: &[&str] = &[
     "flutter", "dotnet", "deno", "uv", "poetry",
 ];
 
-/// Commands Claude Code runs without asking, so they never block a rewrite.
-const READ_ONLY: &[&str] = &["cd", "ls", "pwd", "echo", "cat", "head", "tail", "wc", "grep", "rg", "which", "true", "sort", "uniq"];
 
 /// Lines starting with these words are progress chatter when they repeat.
 const PROGRESS: &[&str] = &[
@@ -329,9 +327,25 @@ fn rule_matches(rule: &str, cmd: &str) -> bool {
     glob(inner, cmd)
 }
 
+/// Harmless on their own: `pwd`, or `cd` into a sub-folder.
+fn harmless(part: &str) -> bool {
+    let w: Vec<&str> = part.split_whitespace().collect();
+    match w.as_slice() {
+        ["pwd"] => true,
+        ["cd", dir] => !dir.starts_with('/') && !dir.starts_with('~') && !dir.split('/').any(|c| c == ".."),
+        _ => false,
+    }
+}
+
+/// den only says "allow" for what the user's own rules already allow.
 fn allowed(rules: &Rules, part: &str) -> bool {
-    let first = part.split_whitespace().next().unwrap_or("");
-    READ_ONLY.contains(&first) || rules.allow.iter().any(|r| rule_matches(r, part))
+    harmless(part) || rules.allow.iter().any(|r| rule_matches(r, part))
+}
+
+/// Redirects, expansions and grouping can write files or run other code;
+/// den never vouches for commands that use them (`2>&1` is fine).
+fn risky(cmd: &str) -> bool {
+    cmd.replace("2>&1", "").chars().any(|c| matches!(c, '>' | '<' | '$' | '`' | '(' | ')' | '{' | '}'))
 }
 
 /// The PreToolUse hook: reads Claude Code's JSON on stdin, prints a decision.
@@ -360,6 +374,9 @@ fn decide(v: &Value, exe: &str) -> Option<Value> {
     updated["command"] = json!(new);
     if mode == "bypassPermissions" {
         return Some(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}));
+    }
+    if risky(cmd) {
+        return None;
     }
     let cwd = PathBuf::from(v["cwd"].as_str().unwrap_or("."));
     let rules = load_rules(&cwd);
@@ -526,6 +543,14 @@ mod tests {
         let none = Rules::default();
         assert!(!allowed(&none, "cargo test"));
         assert!(allowed(&none, "cd src"));
+        assert!(!allowed(&none, "cd ../.."));
+        assert!(!allowed(&none, "cat secret"));
+        let rules = Rules { allow: vec!["Bash(cargo build:*)".into()], deny: vec![] };
+        assert!(allowed(&rules, "cargo build --release"));
+        assert!(!allowed(&rules, "echo x"));
+        assert!(risky("cat a > ~/.bashrc && cargo build"));
+        assert!(risky("cargo build $(evil)"));
+        assert!(!risky("cargo test 2>&1"));
         // bypassPermissions always squeezes.
         let out = decide(&input("cargo build", "bypassPermissions"), "den").unwrap();
         assert_eq!(out["hookSpecificOutput"]["updatedInput"]["command"], "den x cargo build");
