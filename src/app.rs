@@ -292,6 +292,7 @@ pub struct App {
     /// A newer den was installed on disk; /reload switches to it.
     pub update_ready: Option<String>,
     pub prefs: Prefs,
+    outfit_today: Option<crate::ui::companion::Outfit>,
     pub settings_hits: Vec<Rect>,
 }
 
@@ -301,6 +302,7 @@ pub struct Prefs {
     pub typing_effect: bool,
     pub notifications: bool,
     pub auto_update: bool,
+    pub outfit: bool,
 }
 
 impl Prefs {
@@ -310,6 +312,7 @@ impl Prefs {
             typing_effect: c.typing_effect.unwrap_or(true),
             notifications: c.notifications.unwrap_or(true),
             auto_update: c.auto_update.unwrap_or(true),
+            outfit: c.outfit.unwrap_or(true),
         }
     }
 
@@ -318,6 +321,7 @@ impl Prefs {
         c.typing_effect = Some(self.typing_effect);
         c.notifications = Some(self.notifications);
         c.auto_update = Some(self.auto_update);
+        c.outfit = Some(self.outfit);
         store::save_config(&c);
     }
 }
@@ -328,6 +332,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Typing effect", "cursor and fade-in while Claude writes"),
     ("Notifications", "when Claude finishes or needs you (silent)"),
     ("Auto-update", "install new den releases in the background"),
+    ("Seasonal outfit", "Santa hat in December, shades in summer…"),
 ];
 
 
@@ -388,6 +393,7 @@ impl App {
             limit_warned: HashMap::new(),
             update_ready: None,
             prefs: Prefs::load(),
+            outfit_today: crate::ui::companion::Outfit::today(),
             settings_hits: Vec::new(),
         };
         {
@@ -564,6 +570,7 @@ impl App {
             1 => p.typing_effect = !p.typing_effect,
             2 => p.notifications = !p.notifications,
             3 => p.auto_update = !p.auto_update,
+            4 => p.outfit = !p.outfit,
             _ => {}
         }
         self.prefs.save();
@@ -738,6 +745,10 @@ impl App {
 
     pub fn idle_secs(&self) -> f32 {
         self.last_activity.elapsed().as_secs_f32()
+    }
+
+    pub fn outfit(&self) -> Option<crate::ui::companion::Outfit> {
+        if self.prefs.outfit { self.outfit_today } else { None }
     }
 
     pub fn clawd_mood(&self) -> crate::ui::companion::Mood {

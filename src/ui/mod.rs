@@ -281,7 +281,7 @@ fn draw_sidebar(buf: &mut Buffer, area: Rect, app: &mut App) {
         let rows = clawd_rows;
         let lane = Rect::new(x, board_y - 1 - rows, inner_w as u16, rows);
         let t = if app.idle_secs() > companion::DEEP_SLEEP_AFTER { 0.0 } else { crate::anim::secs() };
-        companion::draw(buf, lane, app.clawd_mood(), t, app.reaction_now());
+        companion::draw(buf, lane, app.clawd_mood(), t, app.reaction_now(), app.outfit());
     }
     let mut button = |by: u16, label: &str, key: &str, hit: crate::app::SideHit| {
         if by <= y {
@@ -433,7 +433,7 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
         app.page = body.height as usize;
     }
     let app_text_rect = body;
-    let clawd = (app.clawd_mood(), crate::anim::secs(), app.reaction_now());
+    let clawd = (app.clawd_mood(), crate::anim::secs(), app.reaction_now(), app.outfit());
     let fx = app.prefs.typing_effect;
     let s = &mut app.sessions[idx];
     if s.entries.is_empty() {
@@ -590,10 +590,10 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, idx: usize) -> Option<(R
     Some((br, hit))
 }
 
-type ClawdState = (companion::Mood, f32, Option<(companion::Reaction, f32)>);
+type ClawdState = (companion::Mood, f32, Option<(companion::Reaction, f32)>, Option<companion::Outfit>);
 
 fn draw_welcome(buf: &mut Buffer, area: Rect, s: &Session, label: &str, clawd: ClawdState) {
-    let sprite_rows = companion::H + 1;
+    let sprite_rows = companion::H + 4;
     let text = [
         Line::from(Span::styled("what are we building?", theme::bold(theme::text()))),
         Line::default(),
@@ -607,8 +607,9 @@ fn draw_welcome(buf: &mut Buffer, area: Rect, s: &Session, label: &str, clawd: C
     let total = sprite_rows + 1 + text.len() as u16;
     let top = area.y + area.height.saturating_sub(total) / 2;
     let sx = area.x + area.width.saturating_sub(companion::W) / 2;
-    let rows = companion::H.min(top + sprite_rows - area.y);
-    companion::draw(buf, Rect::new(sx, top + sprite_rows - rows, companion::W, rows), clawd.0, clawd.1, clawd.2);
+    let rows = (companion::H + 3).min(top + sprite_rows - area.y);
+    let lane = Rect::new(sx.saturating_sub(3), top + sprite_rows - rows, companion::W + 6, rows);
+    companion::draw(buf, lane, clawd.0, clawd.1, clawd.2, clawd.3);
     for (i, l) in text.iter().enumerate() {
         let w = l.width() as u16;
         let x = area.x + area.width.saturating_sub(w) / 2;

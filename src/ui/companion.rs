@@ -73,7 +73,7 @@ impl Reaction {
 /// Draws Clawd into `area` (centered, bottom-aligned) for `mood` at time `t`.
 /// Extras like `!` and `z` use the rows above him when there is room.
 /// `react` is a reaction and its progress (0..1).
-pub fn draw(buf: &mut Buffer, area: Rect, mood: Mood, t: f32, react: Option<(Reaction, f32)>) {
+pub fn draw(buf: &mut Buffer, area: Rect, mood: Mood, t: f32, react: Option<(Reaction, f32)>, outfit: Option<Outfit>) {
     if area.width < W || area.height < H {
         return;
     }
@@ -146,23 +146,6 @@ pub fn draw(buf: &mut Buffer, area: Rect, mood: Mood, t: f32, react: Option<(Rea
         };
         buf.set_string(x, y0 + 1, sym, st);
     }
-    // Working: a little laptop, lid tilted back, held in front of him.
-    if mood == Mood::Working && wave.is_none() {
-        let lid = theme::mix((0x3F, 0x3F, 0x46), (0x3F, 0x3F, 0x46), 1.0);
-        let base = theme::mix((0xB4, 0xB4, 0xBC), (0xB4, 0xB4, 0xBC), 1.0);
-        let logo = theme::mix((0xE4, 0xE4, 0xE7), (0xE4, 0xE4, 0xE7), 1.0);
-        for dx in 6..=10u16 {
-            buf.set_string(x0 + dx, y0 + 2, " ", Style::new().bg(lid));
-        }
-        for dx in 5..=9u16 {
-            buf.set_string(x0 + dx, y0 + 3, " ", Style::new().bg(lid));
-        }
-        buf.set_string(x0 + 8, y0 + 2, "▪", Style::new().fg(logo).bg(lid));
-        // Keyboard: a thin slab in the top half of the legs row.
-        for dx in 5..=10u16 {
-            buf.set_string(x0 + dx, y0 + 4, "▀", Style::new().fg(base));
-        }
-    }
     // Waving: the right nub raised, flapping between two heights.
     if let Some(high) = wave {
         let x = x0 + W - 1;
@@ -174,13 +157,22 @@ pub fn draw(buf: &mut Buffer, area: Rect, mood: Mood, t: f32, react: Option<(Rea
         }
     }
 
+    let worn = outfit.filter(|o| y0 >= area.y + o.rows());
+    if let Some(o) = worn {
+        draw_outfit(buf, x0, y0, o);
+    }
+
     match mood {
         Mood::Alert if y0 > area.y && (t * 3.0).sin() > -0.4 => {
-            buf.set_string(x0 + W / 2 - 1, y0 - 1, "!", theme::bold(theme::warn()));
+            // Beside the hat if he's wearing one.
+            let x = if worn.is_some_and(|o| o.rows() > 0) { x0 + W } else { x0 + W / 2 - 1 };
+            if x < area.right() {
+                buf.set_string(x, y0 - 1, "!", theme::bold(theme::warn()));
+            }
         }
         Mood::Asleep if y0 > area.y => {
             let step = ((t / 1.1) as u32) % 3;
-            let (dx, dy, z) = [(W - 2, 1, "z"), (W - 1, 2, "z"), (W, 3, "Z")][step as usize];
+            let (dx, dy, z) = [(W, 1, "z"), (W + 1, 2, "z"), (W + 2, 3, "Z")][step as usize];
             if y0 >= area.y + dy && x0 + dx < area.x + area.width {
                 buf.set_string(x0 + dx, y0 - dy, z, theme::s(theme::dim()));
             }
@@ -189,11 +181,140 @@ pub fn draw(buf: &mut Buffer, area: Rect, mood: Mood, t: f32, react: Option<(Rea
     }
 }
 
+/// Seasonal headwear (or shades), picked from the date.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Outfit {
+    Santa,
+    Party,
+    Beanie,
+    Flower,
+    Shades,
+    Witch,
+}
+
+impl Outfit {
+    pub const ALL: [Outfit; 6] = [Outfit::Santa, Outfit::Party, Outfit::Beanie, Outfit::Flower, Outfit::Shades, Outfit::Witch];
+
+    /// Rows needed above the body.
+    pub fn rows(self) -> u16 {
+        match self {
+            Outfit::Santa | Outfit::Party | Outfit::Witch => 3,
+            Outfit::Beanie | Outfit::Flower => 2,
+            Outfit::Shades => 0,
+        }
+    }
+
+    pub fn for_date(month: u32, day: u32) -> Option<Outfit> {
+        match (month, day) {
+            (11, 20..) | (12, _) => Some(Outfit::Santa),
+            (1, 1..=7) => Some(Outfit::Party),
+            (1, _) | (2, _) | (11, _) => Some(Outfit::Beanie),
+            (3..=5, _) => Some(Outfit::Flower),
+            (6..=8, _) => Some(Outfit::Shades),
+            (10, _) => Some(Outfit::Witch),
+            _ => None,
+        }
+    }
+
+    /// Today's outfit (DEN_OUTFIT=santa|party|… forces one, for previews).
+    pub fn today() -> Option<Outfit> {
+        if let Ok(name) = std::env::var("DEN_OUTFIT") {
+            return Outfit::ALL.into_iter().find(|o| format!("{o:?}").eq_ignore_ascii_case(&name));
+        }
+        let now = unsafe { libc::time(std::ptr::null_mut()) };
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&now, &mut tm) };
+        Outfit::for_date(tm.tm_mon as u32 + 1, tm.tm_mday as u32)
+    }
+}
+
+fn c(r: u8, g: u8, b: u8) -> ratatui::style::Color {
+    theme::mix((r, g, b), (r, g, b), 1.0)
+}
+
+/// Draws `o` on Clawd whose body's top-left is (x0, y0). Solid parts are
+/// background-colored cells, so there are no seams.
+fn draw_outfit(buf: &mut Buffer, x0: u16, y0: u16, o: Outfit) {
+    let put = |buf: &mut Buffer, dx: u16, dy: i16, sym: &str, st: Style| {
+        buf.set_string(x0 + dx, (y0 as i16 + dy) as u16, sym, st);
+    };
+    let fill = |buf: &mut Buffer, xs: std::ops::RangeInclusive<u16>, dy: i16, col| {
+        for dx in xs {
+            buf.set_string(x0 + dx, (y0 as i16 + dy) as u16, " ", Style::new().bg(col));
+        }
+    };
+    let white = c(0xF4, 0xF4, 0xF5);
+    match o {
+        Outfit::Santa => {
+            let red = c(0xD6, 0x33, 0x3A);
+            for dx in 6..=9 {
+                put(buf, dx, -3, "▄", Style::new().fg(red));
+            }
+            fill(buf, 5..=11, -2, red);
+            put(buf, 12, -2, "▄", Style::new().fg(red));
+            put(buf, 13, -2, "●", Style::new().fg(white));
+            for dx in 3..=12 {
+                put(buf, dx, -1, "▄", Style::new().fg(white).bg(red));
+            }
+        }
+        Outfit::Party => {
+            let blue = c(0x4F, 0x7C, 0xF0);
+            let gold = c(0xF5, 0xC5, 0x42);
+            put(buf, 8, -3, "●", Style::new().fg(gold));
+            fill(buf, 7..=9, -2, blue);
+            put(buf, 8, -2, " ", Style::new().bg(gold));
+            fill(buf, 6..=10, -1, blue);
+            put(buf, 7, -1, " ", Style::new().bg(gold));
+            put(buf, 9, -1, " ", Style::new().bg(gold));
+        }
+        Outfit::Beanie => {
+            let teal = c(0x2B, 0x9C, 0x8F);
+            put(buf, 7, -2, "▄", Style::new().fg(white));
+            put(buf, 8, -2, "▄", Style::new().fg(white));
+            put(buf, 3, -1, "▄", Style::new().fg(teal));
+            fill(buf, 4..=11, -1, teal);
+            put(buf, 12, -1, "▄", Style::new().fg(teal));
+            for dx in 3..=12 {
+                put(buf, dx, 0, "▀", Style::new().fg(white).bg(theme::clawd()));
+            }
+        }
+        Outfit::Flower => {
+            let pink = c(0xF2, 0x7F, 0xB5);
+            let gold = c(0xF5, 0xC5, 0x42);
+            let green = c(0x4C, 0xB8, 0x6A);
+            put(buf, 10, -2, "▄", Style::new().fg(pink));
+            put(buf, 11, -2, "▄", Style::new().fg(gold).bg(pink));
+            put(buf, 12, -2, "▄", Style::new().fg(pink));
+            put(buf, 11, -1, "▀", Style::new().fg(pink).bg(green));
+        }
+        Outfit::Shades => {
+            let dark = c(0x14, 0x14, 0x18);
+            fill(buf, 3..=5, 1, dark);
+            fill(buf, 10..=12, 1, dark);
+            for dx in 6..=9 {
+                put(buf, dx, 1, "▀", Style::new().fg(dark).bg(theme::clawd()));
+            }
+            put(buf, 3, 1, "▘", Style::new().fg(c(0x9A, 0x9A, 0xA6)).bg(dark));
+        }
+        Outfit::Witch => {
+            let hat = c(0x3B, 0x2A, 0x55);
+            let band = c(0xF0, 0x8A, 0x3C);
+            put(buf, 8, -3, "▄", Style::new().fg(hat));
+            put(buf, 9, -3, "▄", Style::new().fg(hat));
+            fill(buf, 6..=9, -2, hat);
+            fill(buf, 5..=10, -1, band);
+            for dx in (2..=4).chain(11..=13) {
+                put(buf, dx, -1, "▄", Style::new().fg(hat));
+            }
+        }
+    }
+}
+
 /// The sprite as styled lines (for the tutorial card).
 pub fn lines() -> Vec<ratatui::text::Line<'static>> {
     let area = Rect::new(0, 0, W, H);
     let mut b = Buffer::empty(area);
-    draw(&mut b, area, Mood::Awake, 1.0, None);
+    draw(&mut b, area, Mood::Awake, 1.0, None, None);
     (0..H)
         .map(|y| {
             ratatui::text::Line::from(
@@ -216,7 +337,7 @@ mod tests {
     fn render(m: Mood, t: f32) -> Buffer {
         let area = Rect::new(0, 0, W + 2, H + 3);
         let mut b = Buffer::empty(area);
-        draw(&mut b, area, m, t, None);
+        draw(&mut b, area, m, t, None, None);
         b
     }
 
@@ -224,15 +345,15 @@ mod tests {
     fn reactions_move_him() {
         let area = Rect::new(0, 0, W + 2, H + 3);
         let mut still = Buffer::empty(area);
-        draw(&mut still, area, Mood::Awake, 1.0, None);
+        draw(&mut still, area, Mood::Awake, 1.0, None, None);
         let mut hop = Buffer::empty(area);
-        draw(&mut hop, area, Mood::Awake, 1.0, Some((Reaction::Hop, 0.5)));
+        draw(&mut hop, area, Mood::Awake, 1.0, Some((Reaction::Hop, 0.5)), None);
         // Top body row moves up by one.
         assert_ne!(still[(6, 3)].bg, Color::Reset);
         assert_ne!(hop[(6, 2)].bg, Color::Reset);
         assert_eq!(still[(6, 2)].bg, Color::Reset);
         let mut wave = Buffer::empty(area);
-        draw(&mut wave, area, Mood::Awake, 1.0, Some((Reaction::Wave, 0.0)));
+        draw(&mut wave, area, Mood::Awake, 1.0, Some((Reaction::Wave, 0.0)), None);
         assert_eq!(wave[(1 + W - 1, 2)].symbol(), "▄");
     }
 
@@ -254,6 +375,22 @@ mod tests {
         assert_eq!(open.symbol(), " ");
         assert_eq!(shut.symbol(), "▁");
         assert_eq!(down.symbol(), "▄");
+    }
+
+    #[test]
+    fn outfits_follow_the_calendar() {
+        assert_eq!(Outfit::for_date(12, 3), Some(Outfit::Santa));
+        assert_eq!(Outfit::for_date(11, 18), Some(Outfit::Beanie));
+        assert_eq!(Outfit::for_date(1, 1), Some(Outfit::Party));
+        assert_eq!(Outfit::for_date(7, 4), Some(Outfit::Shades));
+        assert_eq!(Outfit::for_date(10, 31), Some(Outfit::Witch));
+        assert_eq!(Outfit::for_date(9, 10), None);
+        // Every outfit fits inside the space Clawd is drawn in.
+        for o in Outfit::ALL {
+            let area = Rect::new(0, 0, W + 4, H + 4);
+            let mut b = Buffer::empty(area);
+            draw(&mut b, area, Mood::Awake, 1.0, None, Some(o));
+        }
     }
 
     #[test]
