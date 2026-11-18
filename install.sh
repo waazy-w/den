@@ -1,7 +1,6 @@
 #!/bin/sh
-# Installs the latest den release. The repo is private, so this uses the
-# GitHub CLI's login (you must have access to waazy-w/den):
-#   gh api repos/waazy-w/den/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+# Installs the latest den release:
+#   curl -fsSL https://raw.githubusercontent.com/waazy-w/den/main/install.sh | sh
 set -eu
 
 REPO="waazy-w/den"

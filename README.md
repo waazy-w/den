@@ -7,18 +7,17 @@ permissions all work as usual.
 ## Install
 
 You need [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and logged in
-(`claude` on your PATH). The repo is private, so you also need access to it and the
-[GitHub CLI](https://cli.github.com) logged in (`brew install gh && gh auth login`). Then, on macOS or Linux:
+(`claude` on your PATH). Then, on macOS or Linux:
 
 ```sh
-gh api repos/waazy-w/den/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+curl -fsSL https://raw.githubusercontent.com/waazy-w/den/main/install.sh | sh
 den            # restore saved sessions (or start one here)
 den ~/code/api # also open a new session in that directory
 ```
 
 Windows: run it inside [WSL](https://learn.microsoft.com/windows/wsl/install) (den needs a Unix terminal).
 
-**Updates are automatic.** Every few hours den checks GitHub (through your `gh` login) for a new release, installs it in the
+**Updates are automatic.** Every few hours den checks GitHub for a new release, installs it in the
 background and tells you; `/reload` switches to it without stopping anything Claude is doing.
 `/update` or `den update` checks right now. Turn it off with `"auto_update": false` in
 `~/.config/den/config.json` or `DEN_NO_UPDATE=1`.
