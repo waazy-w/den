@@ -22,20 +22,15 @@ url="https://github.com/$REPO/releases/latest/download/$asset"
 mkdir -p "$DEST"
 tmp="$DEST/.den-install-$$"
 echo "downloading $asset …"
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  gh release download -R "$REPO" -p "$asset" -O "$tmp" --clobber
-elif [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
-  token="${GH_TOKEN:-$GITHUB_TOKEN}"
-  api=$(printf 'Authorization: Bearer %s\n' "$token" | curl -fsSL -H @- "https://api.github.com/repos/$REPO/releases/latest" |
-    tr ',' '\n' | grep -B3 "\"name\": *\"$asset\"" | grep '"url"' | head -1 | cut -d'"' -f4)
-  [ -n "$api" ] || { echo "no $asset in the latest release" >&2; exit 1; }
-  printf 'Authorization: Bearer %s\n' "$token" | curl -fSL --progress-bar -H @- -H "Accept: application/octet-stream" -o "$tmp" "$api"
-elif curl -fsSL -o "$tmp" "$url" 2>/dev/null; then
+if curl -fSL --progress-bar -o "$tmp" "$url" 2>/dev/null; then
+  :
+elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 &&
+  gh release download -R "$REPO" -p "$asset" -O "$tmp" --clobber 2>/dev/null; then
   :
 else
-  echo "couldn't download. den's repo is private: install the GitHub CLI (https://cli.github.com)," >&2
-  echo "run 'gh auth login' with an account that has access to $REPO, then try again." >&2
   rm -f "$tmp"
+  echo "couldn't download $asset from the latest release of $REPO." >&2
+  echo "if a new version was just published, its builds may still be uploading: try again in a few minutes." >&2
   exit 1
 fi
 chmod 755 "$tmp"
