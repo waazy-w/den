@@ -117,24 +117,11 @@ pub fn search_hits(sessions: &[Session], q: &str) -> Vec<Hit> {
     out
 }
 
-/// Shows a macOS notification (no-op elsewhere or with DEN_NO_NOTIFY set).
+/// Shows a desktop notification (no-op with DEN_NO_NOTIFY set).
 fn notify(title: &str, body: &str) {
-    if std::env::var_os("DEN_NO_NOTIFY").is_some() || !cfg!(target_os = "macos") {
-        return;
+    if std::env::var_os("DEN_NO_NOTIFY").is_none() {
+        crate::notify::send(title, body);
     }
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        "display notification \"{}\" with title \"den\" subtitle \"{}\"",
-        esc(body),
-        esc(title)
-    );
-    std::thread::spawn(move || {
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    });
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

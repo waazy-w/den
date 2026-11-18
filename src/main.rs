@@ -3,6 +3,7 @@ mod app;
 mod claude;
 mod files;
 mod input;
+mod notify;
 mod projects;
 mod session;
 mod store;
@@ -64,6 +65,11 @@ fn parse_args() -> Result<Opts> {
                         std::process::exit(1);
                     }
                 }
+                std::process::exit(0);
+            }
+            "test-notify" => {
+                notify::send("notifications work", "this is how den tells you Claude is done");
+                std::thread::sleep(Duration::from_secs(4));
                 std::process::exit(0);
             }
             "--no-mouse" => mouse = false,
