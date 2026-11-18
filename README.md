@@ -117,6 +117,10 @@ again or a click moves between panes; each pane keeps its own draft. **×** clos
 `^S` (or **settings** in the sidebar) toggles the typing effect (a soft cursor and fade-in while
 Claude writes), notifications (silent, when Claude finishes or needs you) and auto-update.
 
+**Usage limits.** When Claude hits your plan's usage limit mid-task, den waits for the limit to
+reset and then tells Claude to continue, on its own (with a countdown in the sidebar and a
+notification when it resumes). `esc` cancels; turn it off with Auto-resume in settings.
+
 When a usage window passes 80% (and again at 95%) den warns you, and the status bar shows when it resets.
 
 ## Releasing

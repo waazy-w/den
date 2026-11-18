@@ -294,6 +294,7 @@ pub struct Prefs {
     pub auto_update: bool,
     pub outfit: bool,
     pub squeeze: bool,
+    pub auto_resume: bool,
 }
 
 impl Prefs {
@@ -305,6 +306,7 @@ impl Prefs {
             auto_update: c.auto_update.unwrap_or(true),
             outfit: c.outfit.unwrap_or(true),
             squeeze: c.squeeze.unwrap_or(true),
+            auto_resume: c.auto_resume.unwrap_or(true),
         }
     }
 
@@ -315,6 +317,7 @@ impl Prefs {
         c.auto_update = Some(self.auto_update);
         c.outfit = Some(self.outfit);
         c.squeeze = Some(self.squeeze);
+        c.auto_resume = Some(self.auto_resume);
         store::save_config(&c);
     }
 }
@@ -327,6 +330,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Auto-update", "install new den releases in the background"),
     ("Seasonal outfit", "Santa hat in December, shades in summer…"),
     ("Squeeze output", "trim noisy command output to save tokens"),
+    ("Auto-resume", "continue by itself when a usage limit resets"),
 ];
 
 
@@ -424,6 +428,7 @@ impl App {
             s.style = saved.style.unwrap_or_else(|| "default".into());
             s.ctx_window = saved.ctx_window;
             s.effort = saved.effort;
+            s.resume_at = saved.resume_at;
             s.usage = saved.usage;
             let live = saved.live.clone();
             let claude_id = saved.claude_id.clone().or_else(|| live.as_ref().and_then(|l| l.claude_id.clone()));
@@ -574,6 +579,7 @@ impl App {
             3 => p.auto_update = !p.auto_update,
             4 => p.outfit = !p.outfit,
             5 => p.squeeze = !p.squeeze,
+            6 => p.auto_resume = !p.auto_resume,
             _ => {}
         }
         self.prefs.save();
@@ -638,6 +644,10 @@ impl App {
         if matches!(self.modal, Some(Modal::Tutorial { .. })) {
             return Some(Duration::from_millis(33));
         }
+        // Waiting out a usage limit: tick once a second for the countdown and the resume.
+        if self.sessions.iter().any(|s| s.resume_at.is_some()) {
+            return Some(Duration::from_secs(1));
+        }
         if self.sessions.iter().any(|s| s.agents.iter().any(|a| a.status == crate::session::AgentStatus::Running)) {
             return Some(Duration::from_millis(250));
         }
@@ -656,6 +666,7 @@ impl App {
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() >= Duration::from_secs(3)) {
             self.toast = None;
         }
+        self.run_due_resumes();
     }
 
     /// The running Clawd reaction and its progress.
@@ -687,6 +698,7 @@ impl App {
             ctx_used: s.ctx_used,
             ctx_window: s.ctx_window,
             effort: s.effort.clone(),
+            resume_at: s.resume_at,
             live: None,
         }
     }
@@ -887,6 +899,9 @@ impl App {
     fn after_event(&mut self, i: usize, was_busy: bool, had_perm: bool) {
         use crate::ui::companion::Reaction;
         let away = !self.term_focused || (i != self.active && !self.in_split(i));
+        if let Some(reset) = self.sessions[i].limit_hit.take() {
+            self.schedule_resume(i, reset);
+        }
         let s = &mut self.sessions[i];
         if std::mem::take(&mut s.tests_passed) && i == self.active {
             self.reaction = Some((Reaction::Wiggle, Instant::now()));
@@ -950,6 +965,51 @@ impl App {
         tokio::task::spawn_blocking(move || {
             let _ = tx.send(AppEvent::Update(crate::update::run(), asked));
         });
+    }
+
+    /// A turn stopped on the usage limit: plan to send "continue" once it resets.
+    fn schedule_resume(&mut self, i: usize, reset: u64) {
+        let now = crate::session::now_secs();
+        // Claude Code didn't say when: wait for the fullest window we know of.
+        let reset = if reset > now {
+            reset
+        } else {
+            self.lifetime
+                .limits
+                .iter()
+                .filter(|l| l.utilization >= 0.95 && l.resets_at > now)
+                .map(|l| l.resets_at)
+                .max()
+                .unwrap_or(now + 15 * 60)
+        };
+        // A minute of slack after the reset (DEN_RESUME_SLACK overrides, for tests).
+        let slack = std::env::var("DEN_RESUME_SLACK").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+        let at = reset + slack;
+        let when = format!("at {} (in {})", clock(at), crate::session::dur_words(at.saturating_sub(now)));
+        let s = &mut self.sessions[i];
+        if self.prefs.auto_resume {
+            s.resume_at = Some(at);
+            s.note(format!("usage limit reached · den continues automatically {when} · esc cancels"), NoteKind::Info);
+        } else {
+            s.note(format!("usage limit reached · it resets {when} (turn on Auto-resume in settings to continue by itself)"), NoteKind::Info);
+        }
+        self.persist();
+    }
+
+    /// Sends "continue" for every session whose limit has reset.
+    fn run_due_resumes(&mut self) {
+        let now = crate::session::now_secs();
+        for i in 0..self.sessions.len() {
+            let due = self.sessions[i].resume_at.is_some_and(|t| now >= t) && !self.sessions[i].busy();
+            if !due {
+                continue;
+            }
+            self.sessions[i].resume_at = None;
+            let name = self.sessions[i].name.clone();
+            self.sessions[i].note("usage limit reset · continuing", NoteKind::Info);
+            self.send_now(i, "continue", Value::String("The usage limit has reset. Please continue where you left off.".into()));
+            self.notify(&format!("{name} resumed"), "the usage limit reset, so den picked the work back up");
+        }
     }
 
     fn ensure_proc(&mut self, i: usize) -> bool {
@@ -1094,6 +1154,7 @@ impl App {
     }
 
     fn send_now(&mut self, i: usize, text: &str, content: Value) {
+        self.sessions[i].resume_at = None;
         // Output of earlier `!commands` rides along with this message.
         let content = if self.sessions[i].shell_context.is_empty() {
             content
@@ -2283,6 +2344,9 @@ impl App {
             KeyCode::Esc => {
                 if self.current().busy() {
                     self.interrupt();
+                } else if self.current_mut().resume_at.take().is_some() {
+                    self.toast("auto-resume cancelled");
+                    self.persist();
                 }
                 return;
             }
@@ -2785,6 +2849,16 @@ fn parse_limits(v: &Value) -> Vec<store::Limit> {
         _ => 2,
     });
     out
+}
+
+/// Local wall-clock time like "3:40 PM".
+fn clock(epoch: u64) -> String {
+    let t = epoch as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    let (h, m) = (tm.tm_hour, tm.tm_min);
+    let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+    format!("{h12}:{m:02} {}", if h < 12 { "AM" } else { "PM" })
 }
 
 fn today() -> String {

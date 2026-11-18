@@ -311,7 +311,7 @@ pub fn settings(f: &mut Frame, area: Rect, app: &App, sel: usize) {
         let value: Span = match i {
             0 => Span::styled(format!("{} ›", theme::p().name), bg.fg(theme::accent())),
             _ => {
-                let v = [p.typing_effect, p.notifications, p.auto_update, p.outfit, p.squeeze][i - 1];
+                let v = [p.typing_effect, p.notifications, p.auto_update, p.outfit, p.squeeze, p.auto_resume][i - 1];
                 if v {
                     Span::styled(" ● on ", bg.fg(theme::on_accent()).bg(theme::accent()).add_modifier(Modifier::BOLD))
                 } else {

@@ -22,6 +22,9 @@ pub struct Saved {
     pub ctx_window: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Waiting out a usage limit: when den sends "continue" (epoch seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<u64>,
     /// Only in reload snapshots: a still-running `claude` to reattach to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,
@@ -131,6 +134,8 @@ pub struct Config {
     pub outfit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub squeeze: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_resume: Option<bool>,
 }
 
 pub fn load_config() -> Config {

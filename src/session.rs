@@ -148,6 +148,36 @@ pub enum ActivityKind {
     Idle,
 }
 
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// "2h 10m", "4m", "30s".
+pub fn dur_words(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// Did this reply say the usage limit was hit? Returns the reset time when
+/// the message carries one ("…usage limit reached|1736000000"), else 0.
+pub fn limit_reset(text: &str) -> Option<u64> {
+    let low = text.to_lowercase();
+    let hit = low.contains("usage limit reached") || low.contains("hit your limit") || low.contains("you've reached your limit");
+    if !hit || text.len() > 400 {
+        return None;
+    }
+    let epoch = text
+        .rsplit('|')
+        .next()
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .filter(|_| text.contains('|'))
+        .unwrap_or(0);
+    Some(epoch)
+}
+
 fn ago(secs: u64) -> String {
     match secs {
         0..60 => "just now".into(),
@@ -316,6 +346,11 @@ pub struct Session {
     pub shell_context: Vec<String>,
     /// Entry of a running `/plugin` command; a success restarts claude.
     pub plugin_cmd: Option<usize>,
+    /// The turn stopped on a usage limit: Some(reset time in epoch seconds,
+    /// or 0 when Claude Code didn't say). The app turns it into `resume_at`.
+    pub limit_hit: Option<u64>,
+    /// When den will send "continue" by itself (epoch seconds).
+    pub resume_at: Option<u64>,
 }
 
 impl Session {
@@ -372,6 +407,8 @@ impl Session {
             draft: String::new(),
             shell_context: Vec::new(),
             plugin_cmd: None,
+            limit_hit: None,
+            resume_at: None,
         }
     }
 
@@ -920,6 +957,17 @@ impl Session {
         }
         let is_err = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
         let subtype = tools::s(v, "subtype");
+        let last_text = self.entries.iter().rev().take(3).find_map(|e| match &e.item {
+            Item::Assistant(t) => Some(t.clone()),
+            _ => None,
+        });
+        if !self.replaying
+            && let Some(reset) = [tools::s(v, "result").to_string(), last_text.unwrap_or_default()]
+                .iter()
+                .find_map(|t| limit_reset(t))
+        {
+            self.limit_hit = Some(reset);
+        }
         // Commands like /usage answer only in the result; show it if nothing else did.
         let answered = self
             .entries
@@ -941,7 +989,10 @@ impl Session {
                 }
             };
             let kind = if msg == "interrupted" { NoteKind::Info } else { NoteKind::Error };
-            self.note(msg, kind);
+            // A usage limit gets den's own friendlier note instead of the raw error.
+            if limit_reset(&msg).is_none() {
+                self.note(msg, kind);
+            }
         }
         self.stop_running_tools(ToolState::Stopped);
         self.permissions.clear();
@@ -1080,6 +1131,10 @@ impl Session {
                     return Some((line.trim().to_string(), ActivityKind::Busy));
                 }
                 Some((if self.thinking { "thinking…" } else { "writing…" }.into(), ActivityKind::Busy))
+            }
+            Status::Idle if self.resume_at.is_some() => {
+                let left = self.resume_at.unwrap_or(0).saturating_sub(now_secs());
+                Some((format!("limit · resumes in {}", dur_words(left)), ActivityKind::Waiting))
             }
             Status::Idle => {
                 let at = self.finished_at?;
@@ -1380,6 +1435,17 @@ mod tests {
         assert_eq!(s.status, Status::Idle);
         s.handle(&json!({"type":"stream_event","api_message_id":"m2","event":{"type":"message_start"}}));
         assert_eq!(s.status, Status::Working);
+    }
+
+    #[test]
+    fn usage_limit_replies_are_detected() {
+        assert_eq!(limit_reset("Claude AI usage limit reached|1736000000"), Some(1736000000));
+        assert_eq!(limit_reset("You've hit your limit · resets 3pm (Europe/London)"), Some(0));
+        assert_eq!(limit_reset("All tests pass."), None);
+        let mut s = sess();
+        s.user_message("go");
+        s.handle(&json!({"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1736000000"}));
+        assert_eq!(s.limit_hit, Some(1736000000));
     }
 
     #[test]
