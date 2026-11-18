@@ -971,7 +971,8 @@ impl App {
     fn schedule_resume(&mut self, i: usize, reset: u64) {
         let now = crate::session::now_secs();
         // Claude Code didn't say when: wait for the fullest window we know of.
-        let reset = if reset > now {
+        // Trust a reset time only if it's within the next week.
+        let reset = if reset > now && reset < now.saturating_add(7 * 86400) {
             reset
         } else {
             self.lifetime
@@ -984,7 +985,7 @@ impl App {
         };
         // A minute of slack after the reset (DEN_RESUME_SLACK overrides, for tests).
         let slack = std::env::var("DEN_RESUME_SLACK").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-        let at = reset + slack;
+        let at = reset.saturating_add(slack);
         let when = format!("at {} (in {})", clock(at), crate::session::dur_words(at.saturating_sub(now)));
         let s = &mut self.sessions[i];
         if self.prefs.auto_resume {

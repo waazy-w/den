@@ -957,14 +957,10 @@ impl Session {
         }
         let is_err = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
         let subtype = tools::s(v, "subtype");
-        let last_text = self.entries.iter().rev().take(3).find_map(|e| match &e.item {
-            Item::Assistant(t) => Some(t.clone()),
-            _ => None,
-        });
+        // Only Claude Code's own error result counts, never text Claude wrote.
         if !self.replaying
-            && let Some(reset) = [tools::s(v, "result").to_string(), last_text.unwrap_or_default()]
-                .iter()
-                .find_map(|t| limit_reset(t))
+            && is_err
+            && let Some(reset) = limit_reset(tools::s(v, "result"))
         {
             self.limit_hit = Some(reset);
         }
@@ -1446,6 +1442,12 @@ mod tests {
         s.user_message("go");
         s.handle(&json!({"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1736000000"}));
         assert_eq!(s.limit_hit, Some(1736000000));
+        // Claude merely saying the words is not a limit.
+        let mut s = sess();
+        s.user_message("go");
+        s.handle(&json!({"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"Claude AI usage limit reached|1"}]}}));
+        s.handle(&json!({"type":"result","subtype":"success","is_error":false,"result":"Claude AI usage limit reached|1"}));
+        assert_eq!(s.limit_hit, None);
     }
 
     #[test]
