@@ -31,8 +31,22 @@ pub enum Modal {
     /// `prev` is the theme to restore on esc.
     Theme { sel: usize, prev: usize },
     Settings { sel: usize },
+    Doctor { checks: Vec<Check> },
     Files { sel: usize, scroll: u16 },
     Search { query: Editor, sel: usize },
+}
+
+/// One line of `/doctor`: ok = Some(true) pass, Some(false) problem, None info.
+#[derive(Clone, Debug)]
+pub struct Check {
+    pub label: String,
+    pub ok: Option<bool>,
+    pub detail: String,
+    pub fix: String,
+}
+
+fn check(label: &str, ok: Option<bool>, detail: impl Into<String>, fix: &str) -> Check {
+    Check { label: label.into(), ok, detail: detail.into(), fix: fix.into() }
 }
 
 /// A model from Claude Code's catalog.
@@ -212,6 +226,10 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("effort", "thinking effort  low|medium|high|xhigh|max|auto"),
     ("files", "files Claude changed, with diffs"),
     ("settings", "theme, typing effect, notifications, updates"),
+    ("pin", "pin a note that survives compaction  <text>"),
+    ("unpin", "remove a pin  <number>|all"),
+    ("compact", "compact, keeping pins, tasks and changed files  [focus]"),
+    ("doctor", "check Claude Code, login and updates"),
     ("theme", "pick a color theme  [name]"),
     ("plugin", "install and manage Claude Code plugins  list|install|marketplace add …"),
     ("split", "two sessions side by side  [off]"),
@@ -280,6 +298,12 @@ pub struct App {
     /// A newer den was installed on disk; /reload switches to it.
     pub update_ready: Option<String>,
     pub prefs: Prefs,
+    /// Logged in to Claude, from Claude Code's catalog (None until it answers).
+    account: Option<bool>,
+    /// Plan usage over time per window, for the burn-rate forecast.
+    limit_samples: HashMap<String, std::collections::VecDeque<(u64, f32)>>,
+    forecast_warned: std::collections::HashSet<String>,
+    last_update_check: Instant,
     outfit_today: Option<crate::ui::companion::Outfit>,
     /// den's own path, for the output-squeezing hook (None when RTK does that job).
     squeeze_hook: Option<String>,
@@ -295,6 +319,7 @@ pub struct Prefs {
     pub outfit: bool,
     pub squeeze: bool,
     pub auto_resume: bool,
+    pub smart_compact: bool,
 }
 
 impl Prefs {
@@ -307,6 +332,7 @@ impl Prefs {
             outfit: c.outfit.unwrap_or(true),
             squeeze: c.squeeze.unwrap_or(true),
             auto_resume: c.auto_resume.unwrap_or(true),
+            smart_compact: c.smart_compact.unwrap_or(true),
         }
     }
 
@@ -318,6 +344,7 @@ impl Prefs {
         c.outfit = Some(self.outfit);
         c.squeeze = Some(self.squeeze);
         c.auto_resume = Some(self.auto_resume);
+        c.smart_compact = Some(self.smart_compact);
         store::save_config(&c);
     }
 }
@@ -331,6 +358,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Seasonal outfit", "Santa hat in December, shades in summer…"),
     ("Squeeze output", "trim noisy command output to save tokens"),
     ("Auto-resume", "continue by itself when a usage limit resets"),
+    ("Smart compact", "compact at 75% context, keeping pins, tasks and files"),
 ];
 
 
@@ -391,6 +419,10 @@ impl App {
             limit_warned: HashMap::new(),
             update_ready: None,
             prefs: Prefs::load(),
+            account: None,
+            limit_samples: HashMap::new(),
+            forecast_warned: std::collections::HashSet::new(),
+            last_update_check: Instant::now(),
             outfit_today: crate::ui::companion::Outfit::today(),
             squeeze_hook: (!crate::squeeze::rtk_active())
                 .then(|| std::env::current_exe().ok())
@@ -407,6 +439,7 @@ impl App {
             if app.prefs.auto_update && crate::update::due() {
                 app.check_update(false);
             }
+            app.run_doctor(true);
         }
         if app.lifetime.since.is_none() {
             app.lifetime.since = Some(today());
@@ -429,6 +462,7 @@ impl App {
             s.ctx_window = saved.ctx_window;
             s.effort = saved.effort;
             s.resume_at = saved.resume_at;
+            s.pins = saved.pins;
             s.usage = saved.usage;
             let live = saved.live.clone();
             let claude_id = saved.claude_id.clone().or_else(|| live.as_ref().and_then(|l| l.claude_id.clone()));
@@ -580,6 +614,7 @@ impl App {
             4 => p.outfit = !p.outfit,
             5 => p.squeeze = !p.squeeze,
             6 => p.auto_resume = !p.auto_resume,
+            7 => p.smart_compact = !p.smart_compact,
             _ => {}
         }
         self.prefs.save();
@@ -652,7 +687,12 @@ impl App {
             return Some(Duration::from_millis(250));
         }
         // Clawd blinks and glances; stop once he's in deep sleep.
-        (self.idle_secs() < crate::ui::companion::DEEP_SLEEP_AFTER).then_some(Duration::from_millis(150))
+        // Deep asleep: still wake now and then (update checks, the cache chip).
+        Some(if self.idle_secs() < crate::ui::companion::DEEP_SLEEP_AFTER {
+            Duration::from_millis(150)
+        } else {
+            Duration::from_secs(600)
+        })
     }
 
     pub fn tick(&mut self) {
@@ -667,6 +707,13 @@ impl App {
             self.toast = None;
         }
         self.run_due_resumes();
+        // den may stay open for days: look for updates while it runs too.
+        if self.last_update_check.elapsed() >= Duration::from_secs(30 * 60) {
+            self.last_update_check = Instant::now();
+            if self.prefs.auto_update && crate::update::due() {
+                self.check_update(false);
+            }
+        }
     }
 
     /// The running Clawd reaction and its progress.
@@ -699,6 +746,7 @@ impl App {
             ctx_window: s.ctx_window,
             effort: s.effort.clone(),
             resume_at: s.resume_at,
+            pins: s.pins.clone(),
             live: None,
         }
     }
@@ -789,6 +837,7 @@ impl App {
                 }
                 if v.get("type").and_then(Value::as_str) == Some("rate_limit_event") {
                     let limits = parse_limits(&v);
+                    self.sample_limits(&limits);
                     if !limits.is_empty() && limits != self.lifetime.limits {
                         self.warn_limits(&limits);
                         self.lifetime.limits = limits;
@@ -870,7 +919,19 @@ impl App {
                     _ => {}
                 }
             }
+            AppEvent::Doctor(checks, auto) => {
+                // At startup it only speaks up when something is actually wrong.
+                let broken = checks.iter().any(|c| c.ok == Some(false));
+                if !auto || (broken && self.modal.is_none()) {
+                    self.open_modal(Modal::Doctor { checks });
+                }
+            }
             AppEvent::Catalog(v) => {
+                let logged_in = v.get("account").is_some_and(|a| !a.is_null());
+                self.account = Some(logged_in);
+                if !logged_in {
+                    self.run_doctor(true);
+                }
                 self.available_styles = v
                     .get("available_output_styles")
                     .and_then(Value::as_array)
@@ -925,6 +986,7 @@ impl App {
                 self.notify(&format!("{} is done", s.name), &body);
             }
             let (respawn, sid) = (s.respawn, s.sid);
+            self.context_check(i);
             if i == self.active && self.reaction_now().is_none() {
                 self.react(Reaction::Hop);
             }
@@ -965,6 +1027,152 @@ impl App {
         tokio::task::spawn_blocking(move || {
             let _ = tx.send(AppEvent::Update(crate::update::run(), asked));
         });
+    }
+
+    /// Checks Claude Code, login, updates and the terminal in the background.
+    pub fn run_doctor(&self, auto: bool) {
+        let tx = self.tx.clone();
+        let account = self.account;
+        let prefs = self.prefs;
+        let squeeze_hook = self.squeeze_hook.is_some();
+        tokio::task::spawn_blocking(move || {
+            use std::process::{Command, Stdio};
+            let out = |cmd: &str, args: &[&str]| {
+                Command::new(cmd).args(args).stdin(Stdio::null()).output().ok().filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            };
+            let bin = std::env::var("DEN_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+            let mut checks = Vec::new();
+            let claude = out(&bin, &["--version"]);
+            checks.push(match &claude {
+                Some(v) => check("Claude Code", Some(true), if v.is_empty() { "installed".into() } else { v.clone() }, ""),
+                None => check("Claude Code", Some(false), "not found", "install it: https://docs.claude.com/en/docs/claude-code/setup"),
+            });
+            checks.push(match (claude.is_some(), account) {
+                (false, _) => check("Logged in", None, "needs Claude Code first", ""),
+                (true, Some(true)) => check("Logged in", Some(true), "yes", ""),
+                (true, Some(false)) => check("Logged in", Some(false), "not logged in", "run `claude` once in a terminal and log in"),
+                (true, None) => check("Logged in", None, "checking… (open /doctor again in a moment)", ""),
+            });
+            checks.push(match (prefs.auto_update, out("curl", &["--version"]).is_some()) {
+                (false, _) => check("Updates", None, "auto-update is off (settings)", ""),
+                (true, true) => check("Updates", Some(true), format!("on · den {}", crate::update::VERSION), ""),
+                (true, false) => check("Updates", Some(false), "curl not found", "install curl so den can update itself"),
+            });
+            let squeeze = if crate::squeeze::rtk_active() {
+                "RTK is squeezing command output"
+            } else if prefs.squeeze && squeeze_hook {
+                "den squeezes noisy command output"
+            } else {
+                "off (settings)"
+            };
+            checks.push(check("Token squeezer", None, squeeze, ""));
+            let term = std::env::var("TERM_PROGRAM").unwrap_or_default();
+            checks.push(if term == "Apple_Terminal" {
+                check("Terminal", None, "Terminal.app", "rows with a background look striped there; Ghostty or iTerm2 draw them solid")
+            } else {
+                check("Terminal", Some(true), if term.is_empty() { "ok".to_string() } else { term }, "")
+            });
+            let _ = tx.send(AppEvent::Doctor(checks, auto));
+        });
+    }
+
+    /// Records plan usage over time for the burn-rate forecast, and warns
+    /// once per window when the current pace runs out before the reset.
+    fn sample_limits(&mut self, limits: &[store::Limit]) {
+        let now = crate::session::now_secs();
+        for l in limits {
+            let q = self.limit_samples.entry(l.key.clone()).or_default();
+            if q.back().is_some_and(|&(_, u)| u > l.utilization + 0.05) {
+                q.clear(); // the window reset
+                self.forecast_warned.remove(&l.key);
+            }
+            q.push_back((now, l.utilization));
+            while q.front().is_some_and(|&(t, _)| now.saturating_sub(t) > 3600) {
+                q.pop_front();
+            }
+            if let Some(eta) = self.forecast(&l.key)
+                && eta < 30 * 60
+                && l.resets_at > now + eta
+                && self.forecast_warned.insert(l.key.clone())
+            {
+                let msg = format!(
+                    "⚠ at this pace the {} limit runs out in ~{} (resets in {})",
+                    limit_name(&l.key),
+                    crate::session::dur_words(eta),
+                    reset_in(l.resets_at, now).unwrap_or_default()
+                );
+                self.toast(msg.clone());
+                if !self.term_focused {
+                    self.notify("usage", &msg);
+                }
+            }
+        }
+    }
+
+    /// Seconds until a usage window fills at the pace of the last hour.
+    pub fn forecast(&self, key: &str) -> Option<u64> {
+        let q = self.limit_samples.get(key)?;
+        let (&(t0, u0), &(t1, u1)) = (q.front()?, q.back()?);
+        let (dt, du) = (t1.saturating_sub(t0), u1 - u0);
+        if dt < 180 || du <= 0.005 || u1 >= 1.0 {
+            return None;
+        }
+        Some(((1.0 - u1) / (du / dt as f32)) as u64)
+    }
+
+    fn show_pins(&mut self) {
+        let s = self.current_mut();
+        if s.pins.is_empty() {
+            self.toast("no pins · /pin <note> keeps it through compaction");
+            return;
+        }
+        let list = s.pins.iter().enumerate().map(|(k, p)| format!("{}. {p}", k + 1)).collect::<Vec<_>>().join("\n");
+        s.note(format!("pinned notes (/unpin <n> removes one):\n{list}"), NoteKind::Info);
+    }
+
+    /// Sends `/compact` with instructions that keep what matters.
+    fn smart_compact(&mut self, i: usize, focus: &str, auto: bool) {
+        let ins = self.sessions[i].compact_instructions(focus);
+        let s = &self.sessions[i];
+        let kept = format!(
+            "keeping {} pin(s), {} open task(s), {} changed file(s)",
+            s.pins.len(),
+            s.todos.iter().filter(|t| t.state != crate::session::TodoState::Done).count(),
+            s.changes.len()
+        );
+        let label = if auto { format!("/compact · auto at {:.0}% · {kept}", s.ctx_pct()) } else { format!("/compact · {kept}") };
+        let content = Value::String(format!("/compact {ins}"));
+        if self.sessions[i].busy() {
+            self.sessions[i].queue.push_back((label, content));
+        } else {
+            self.send_now(i, &label, content);
+        }
+    }
+
+    /// Context alerts at 70% / 85%, and den's own compaction at 75% when a turn ends.
+    fn context_check(&mut self, i: usize) {
+        let smart = self.prefs.smart_compact;
+        let s = &mut self.sessions[i];
+        if smart && s.ctx_pct() >= 75.0 && !s.auto_compacted && s.queue.is_empty() && s.claude_id.is_some() {
+            s.auto_compacted = true;
+            s.ctx_alerted = s.ctx_alerted.max(85);
+            self.smart_compact(i, "", true);
+            return;
+        }
+        if let Some(level) = s.context_alert() {
+            let pct = s.ctx_pct();
+            let msg = match (level, smart) {
+                (70, true) => format!("context {pct:.0}% full · den compacts at 75% between turns, keeping your pins, tasks and files"),
+                (70, false) => format!("context {pct:.0}% full · /compact keeps your pins, tasks and files"),
+                _ => format!("context {pct:.0}% full · Claude Code may compact on its own soon; /compact now keeps what matters"),
+            };
+            s.note(msg.clone(), NoteKind::Info);
+            if i != self.active || !self.term_focused {
+                let name = s.name.clone();
+                self.notify(&format!("{name}: context {pct:.0}% full"), "compact soon to keep things sharp");
+            }
+        }
     }
 
     /// A turn stopped on the usage limit: plan to send "continue" once it resets.
@@ -1156,6 +1364,11 @@ impl App {
 
     fn send_now(&mut self, i: usize, text: &str, content: Value) {
         self.sessions[i].resume_at = None;
+        // After a compaction, the pins ride along with the next message.
+        if std::mem::take(&mut self.sessions[i].repin) && !self.sessions[i].pins.is_empty() {
+            let pins = self.sessions[i].pins.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+            self.sessions[i].shell_context.insert(0, format!("Pinned notes from me (keep these in mind):\n{pins}"));
+        }
         // Output of earlier `!commands` rides along with this message.
         let content = if self.sessions[i].shell_context.is_empty() {
             content
@@ -1305,6 +1518,31 @@ impl App {
                 self.close_pane(a);
             }
             "settings" | "config" | "prefs" => self.open_modal(Modal::Settings { sel: 0 }),
+            "pin" if arg.is_empty() => self.show_pins(),
+            "pin" => {
+                let s = self.current_mut();
+                s.pins.push(arg.to_string());
+                let n = s.pins.len();
+                s.note(format!("▪ pinned ({n}) · kept through every compaction"), NoteKind::Info);
+                self.persist();
+            }
+            "pins" => self.show_pins(),
+            "unpin" => {
+                let s = self.current_mut();
+                let removed = if arg == "all" {
+                    std::mem::take(&mut s.pins).len()
+                } else {
+                    let k = arg.parse::<usize>().ok().filter(|k| *k >= 1 && *k <= s.pins.len());
+                    k.map(|k| s.pins.remove(k - 1)).map_or(0, |_| 1)
+                };
+                self.toast(if removed > 0 { format!("unpinned {removed}") } else { "usage: /unpin <number>|all".into() });
+                self.persist();
+            }
+            "compact" => {
+                let i = self.active;
+                self.smart_compact(i, arg, false);
+            }
+            "doctor" | "check" => self.run_doctor(false),
             "theme" if arg.is_empty() => self.open_theme_picker(),
             "theme" => {
                 if crate::theme::set(arg) {
@@ -2482,6 +2720,7 @@ impl App {
                     | Modal::Search { .. }
                     | Modal::Theme { .. }
                     | Modal::Settings { .. }
+                    | Modal::Doctor { .. }
             )
         ) {
             return self.panel_key(k);
@@ -2499,7 +2738,8 @@ impl App {
             | Modal::Files { .. }
             | Modal::Search { .. }
             | Modal::Theme { .. }
-            | Modal::Settings { .. } => {}
+            | Modal::Settings { .. }
+            | Modal::Doctor { .. } => {}
             Modal::Help | Modal::Stats | Modal::Agents | Modal::Tutorial { .. } => {
                 self.modal = None;
                 if matches!(k.code, KeyCode::Char(_)) && !ctrl {
@@ -2584,6 +2824,13 @@ impl App {
                 crate::theme::set_index(prev);
             }
             self.modal = None;
+            return;
+        }
+        if matches!(self.modal, Some(Modal::Doctor { .. })) {
+            match k.code {
+                KeyCode::Enter | KeyCode::Char('r') => self.run_doctor(false),
+                _ => self.modal = None,
+            }
             return;
         }
         if let Some(Modal::Settings { sel }) = &mut self.modal {

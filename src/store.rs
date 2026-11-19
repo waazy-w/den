@@ -25,6 +25,8 @@ pub struct Saved {
     /// Waiting out a usage limit: when den sends "continue" (epoch seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<String>,
     /// Only in reload snapshots: a still-running `claude` to reattach to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,
@@ -136,6 +138,8 @@ pub struct Config {
     pub squeeze: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_resume: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart_compact: Option<bool>,
 }
 
 pub fn load_config() -> Config {

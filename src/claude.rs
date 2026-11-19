@@ -21,6 +21,8 @@ pub enum AppEvent {
     Update(crate::update::Outcome, bool),
     /// A `!command` finished: session, entry, output, exit code.
     Shell(usize, usize, String, i32),
+    /// Results of the setup check; `bool` = it ran by itself at startup.
+    Doctor(Vec<crate::app::Check>, bool),
 }
 
 /// A running `claude` process and the tasks pumping its pipes.

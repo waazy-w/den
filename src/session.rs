@@ -351,6 +351,14 @@ pub struct Session {
     pub limit_hit: Option<u64>,
     /// When den will send "continue" by itself (epoch seconds).
     pub resume_at: Option<u64>,
+    /// Notes the user pinned; they survive compaction (re-sent after it).
+    pub pins: Vec<String>,
+    /// A compaction just happened: attach the pins to the next message.
+    pub repin: bool,
+    /// Highest context alert shown (70 / 85); resets when context drops.
+    pub ctx_alerted: u8,
+    /// den's own auto-compact already ran at this fill; re-armed below 60%.
+    pub auto_compacted: bool,
 }
 
 impl Session {
@@ -409,6 +417,10 @@ impl Session {
             plugin_cmd: None,
             limit_hit: None,
             resume_at: None,
+            pins: Vec::new(),
+            repin: false,
+            ctx_alerted: 0,
+            auto_compacted: false,
         }
     }
 
@@ -636,7 +648,11 @@ impl Session {
                     self.status = Status::Working;
                 }
             }
-            "compact_boundary" => self.note("context compacted", NoteKind::Info),
+            "compact_boundary" => {
+                let kept = if self.pins.is_empty() { String::new() } else { format!(" · your {} pin(s) go along with your next message", self.pins.len()) };
+                self.note(format!("context compacted{kept}"), NoteKind::Info);
+                self.repin = !self.pins.is_empty() && !self.replaying;
+            }
             "task_started" | "task_progress" | "task_notification" => self.on_task(v),
             _ => {}
         }
@@ -1094,6 +1110,50 @@ impl Session {
         }
     }
 
+    /// Instructions for `/compact` that keep what matters: the user's pins,
+    /// open tasks, files changed and the current goal.
+    pub fn compact_instructions(&self, focus: &str) -> String {
+        let mut keep = vec!["Keep the current goal and any decisions we made.".to_string()];
+        if let Some(goal) = self.entries.iter().rev().find_map(|e| match &e.item {
+            Item::User(t) => Some(t.lines().next().unwrap_or("").chars().take(200).collect::<String>()),
+            _ => None,
+        }) {
+            keep.push(format!("Latest request: {goal}"));
+        }
+        if !self.pins.is_empty() {
+            keep.push(format!("Keep these pinned notes verbatim: {}", self.pins.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join("; ")));
+        }
+        let open: Vec<&str> = self.todos.iter().filter(|t| t.state != TodoState::Done).map(|t| t.text.as_str()).collect();
+        if !open.is_empty() {
+            keep.push(format!("Open tasks: {}", open.join("; ")));
+        }
+        if !self.changes.is_empty() {
+            let files: Vec<String> = self.changes.iter().map(|c| c.path.to_string_lossy().into_owned()).collect();
+            keep.push(format!("Files changed so far: {}", files.join(", ")));
+        }
+        keep.push("Drop raw tool output and superseded attempts.".into());
+        if !focus.trim().is_empty() {
+            keep.push(format!("Also: {}", focus.trim()));
+        }
+        keep.join(" ")
+    }
+
+    /// Context-fill alert to show now, if the fill just crossed 70% or 85%.
+    pub fn context_alert(&mut self) -> Option<u8> {
+        let pct = self.ctx_pct();
+        if pct < 50.0 {
+            self.ctx_alerted = 0;
+        }
+        if pct < 60.0 {
+            self.auto_compacted = false;
+        }
+        let level = if pct >= 85.0 { 85 } else if pct >= 70.0 { 70 } else { 0 };
+        (level > self.ctx_alerted).then(|| {
+            self.ctx_alerted = level;
+            level
+        })
+    }
+
     /// One short line on what the session is up to, for the sidebar.
     pub fn activity(&self) -> Option<(String, ActivityKind)> {
         if !self.permissions.is_empty() {
@@ -1448,6 +1508,26 @@ mod tests {
         s.handle(&json!({"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"Claude AI usage limit reached|1"}]}}));
         s.handle(&json!({"type":"result","subtype":"success","is_error":false,"result":"Claude AI usage limit reached|1"}));
         assert_eq!(s.limit_hit, None);
+    }
+
+    #[test]
+    fn compaction_keeps_pins_and_alerts_once() {
+        let mut s = sess();
+        s.user_message("ship the release");
+        s.pins.push("never touch prod config".into());
+        let ins = s.compact_instructions("");
+        assert!(ins.contains("never touch prod config") && ins.contains("ship the release"));
+        s.handle(&json!({"type":"system","subtype":"compact_boundary"}));
+        assert!(s.repin);
+        s.ctx_window = 100;
+        s.ctx_used = 72;
+        assert_eq!(s.context_alert(), Some(70));
+        assert_eq!(s.context_alert(), None);
+        s.ctx_used = 90;
+        assert_eq!(s.context_alert(), Some(85));
+        s.ctx_used = 10;
+        assert_eq!(s.context_alert(), None);
+        assert_eq!(s.ctx_alerted, 0);
     }
 
     #[test]

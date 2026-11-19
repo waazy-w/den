@@ -311,7 +311,7 @@ pub fn settings(f: &mut Frame, area: Rect, app: &App, sel: usize) {
         let value: Span = match i {
             0 => Span::styled(format!("{} ›", theme::p().name), bg.fg(theme::accent())),
             _ => {
-                let v = [p.typing_effect, p.notifications, p.auto_update, p.outfit, p.squeeze, p.auto_resume][i - 1];
+                let v = [p.typing_effect, p.notifications, p.auto_update, p.outfit, p.squeeze, p.auto_resume, p.smart_compact][i - 1];
                 if v {
                     Span::styled(" ● on ", bg.fg(theme::on_accent()).bg(theme::accent()).add_modifier(Modifier::BOLD))
                 } else {
@@ -338,4 +338,41 @@ pub fn settings(f: &mut Frame, area: Rect, app: &App, sel: usize) {
         );
     }
     hint(f, inner, "↑↓ choose   ⏎ / click toggle   esc close");
+}
+
+pub fn doctor(f: &mut Frame, area: Rect, checks: &[crate::app::Check]) {
+    let rows: u16 = checks.iter().map(|c| if c.fix.is_empty() { 1 } else { 2 }).sum();
+    let rect = centered(area, 104, rows + checks.len() as u16 + 5);
+    f.render_widget(Clear, rect);
+    let b = modal_block("doctor");
+    let inner = b.inner(rect);
+    f.render_widget(b, rect);
+    let buf = f.buffer_mut();
+    let w = inner.width as usize;
+    let mut y = inner.y + 1;
+    for c in checks {
+        let (icon, st) = match c.ok {
+            Some(true) => ("✓", theme::s(theme::ok())),
+            Some(false) => ("✗", theme::bold(theme::err())),
+            None => ("·", theme::s(theme::dim())),
+        };
+        buf.set_line(
+            inner.x + 2,
+            y,
+            &Line::from(vec![
+                Span::styled(format!("{icon} "), st),
+                Span::styled(format!("{:<16}", c.label), theme::bold(theme::text())),
+                Span::styled(truncate(&c.detail, w.saturating_sub(24)), theme::s(theme::dim())),
+            ]),
+            inner.width.saturating_sub(2),
+        );
+        y += 1;
+        if !c.fix.is_empty() {
+            let fix_st = if c.ok == Some(false) { theme::s(theme::warn()) } else { theme::s(theme::faint()) };
+            buf.set_string(inner.x + 20, y, truncate(&format!("→ {}", c.fix), w.saturating_sub(22)), fix_st);
+            y += 1;
+        }
+        y += 1;
+    }
+    hint(f, inner, "⏎ check again   esc close");
 }

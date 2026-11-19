@@ -356,9 +356,27 @@ fn draw_tasks(buf: &mut Buffer, area: Rect, app: &mut App) -> u16 {
         buf.set_string(area.x + (w.saturating_sub(width(&n))) as u16, y, &n, theme::s(theme::ok()));
         y += 1;
     }
+    if !s.pins.is_empty() && y + 3 <= bottom {
+        y += 1;
+        buf.set_string(area.x, y, "─".repeat(w), theme::s(theme::rule()));
+        y += 1;
+        buf.set_string(area.x, y, "pinned", theme::bold(theme::dim()));
+        let n = s.pins.len().to_string();
+        buf.set_string(area.x + (w - n.len()) as u16, y, &n, theme::s(theme::dim()));
+        y += 1;
+        for p in s.pins.iter().take(3) {
+            if y + 1 >= bottom {
+                break;
+            }
+            buf.set_string(area.x, y, "▪", theme::s(theme::accent()));
+            buf.set_string(area.x + 2, y, truncate(p, w.saturating_sub(2)), theme::s(theme::dim()));
+            y += 1;
+        }
+    }
+    let shown_rule = !s.pins.is_empty();
     if !s.changes.is_empty() && y + 3 <= bottom {
         y += 1;
-        if !open && !all_done {
+        if !open && !all_done && !shown_rule {
             buf.set_string(area.x, y, "─".repeat(w), theme::s(theme::rule()));
             y += 1;
         }
@@ -790,8 +808,15 @@ fn draw_status(buf: &mut Buffer, area: Rect, app: &App, idx: usize) -> Rect {
         };
         let pct = if l.resets_at > 0 && now >= l.resets_at { 0.0 } else { l.utilization * 100.0 };
         gauge(label, pct, &mut spans);
-        // Near the limit: say when it frees up.
-        if pct >= 80.0
+        // Running out faster than it resets: say when, at this pace.
+        if let Some(eta) = app.forecast(&l.key)
+            && l.resets_at > now + eta
+            && eta < 3 * 3600
+        {
+            spans.pop();
+            spans.push(Span::styled(format!(" ⇢ full ~{}", crate::session::dur_words(eta)), theme::s(theme::warn())));
+            spans.push(Span::raw("   "));
+        } else if pct >= 80.0
             && let Some(r) = crate::app::reset_in(l.resets_at, now)
         {
             spans.pop();
@@ -799,6 +824,12 @@ fn draw_status(buf: &mut Buffer, area: Rect, app: &App, idx: usize) -> Rect {
             spans.push(Span::styled(format!(" ↻{r}"), theme::s(c)));
             spans.push(Span::raw("   "));
         }
+    }
+    // Claude's prompt cache lasts ~5 minutes; after that the next message
+    // re-reads the whole conversation at full price.
+    if !s.busy() && s.ctx_used > 20_000 && s.finished_at.is_some_and(|t| t.elapsed().as_secs() > 300) {
+        spans.push(Span::styled("❄ cache cold", theme::s(theme::accent_soft())));
+        spans.push(Span::raw("   "));
     }
     spans.push(Span::styled(fmt_tokens(s.usage.tok_in + s.usage.tok_out), theme::s(theme::text())));
     spans.push(Span::styled(" tokens", theme::s(theme::dim())));
@@ -1085,6 +1116,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
         Modal::Model { sel, effort } => panels::model(f, area, app, *sel, *effort),
         Modal::Theme { sel, .. } => panels::theme(f, area, *sel),
         Modal::Settings { sel } => panels::settings(f, area, app, *sel),
+        Modal::Doctor { checks } => panels::doctor(f, area, checks),
         Modal::Files { sel, scroll } => panels::files(f, area, app, *sel, *scroll),
         Modal::Search { query, sel } => panels::search(f, area, app, query, *sel),
         Modal::Help => {
@@ -1099,6 +1131,8 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 ("⌥M  /model", "model and thinking effort"),
                 ("/files", "files Claude changed, with diffs"),
                 ("^S  /settings", "theme, typing effect, notifications"),
+                ("/pin  /compact", "notes that survive compaction · smart compact"),
+                ("/doctor", "check Claude Code, login and updates"),
                 ("/theme", "pick a color theme"),
                 ("⇧tab  /mode", "permission mode · auto mode"),
                 ("drag  /copy", "copy text · copy last reply"),

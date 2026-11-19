@@ -117,6 +117,16 @@ again or a click moves between panes; each pane keeps its own draft. **×** clos
 `^S` (or **settings** in the sidebar) toggles the typing effect (a soft cursor and fade-in while
 Claude writes), notifications (silent, when Claude finishes or needs you) and auto-update.
 
+**Context.** `/pin <note>` keeps a note through every compaction (it's sent back to Claude right
+after one); pinned notes show in the sidebar. `/compact` compacts while keeping your pins, open tasks
+and changed files, and with Smart compact on (settings) den does this by itself at 75% context,
+between turns, before Claude Code's own late compaction. You get a heads-up at 70% and 85%, and a
+`❄ cache cold` chip when the prompt cache has expired (the next message re-reads everything at full
+price). Near a usage limit the status bar forecasts when you'll run out at the current pace.
+
+`/doctor` checks that Claude Code is installed and logged in and that updates work; it opens by
+itself if something's wrong. den also checks for updates while it stays open.
+
 **Usage limits.** When Claude hits your plan's usage limit mid-task, den waits for the limit to
 reset and then tells Claude to continue, on its own (with a countdown in the sidebar and a
 notification when it resumes). `esc` cancels; turn it off with Auto-resume in settings.
