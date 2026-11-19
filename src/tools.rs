@@ -16,7 +16,8 @@ pub fn short_path(p: &str, cwd: &Path) -> String {
 }
 
 pub fn tilde(p: &str) -> String {
-    if let Ok(home) = std::env::var("HOME")
+    let home = crate::platform::home().to_string_lossy().into_owned();
+    if home != "."
         && let Some(rest) = p.strip_prefix(&home)
     {
         return format!("~{rest}");

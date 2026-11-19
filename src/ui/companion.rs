@@ -221,10 +221,8 @@ impl Outfit {
         if let Ok(name) = std::env::var("DEN_OUTFIT") {
             return Outfit::ALL.into_iter().find(|o| format!("{o:?}").eq_ignore_ascii_case(&name));
         }
-        let now = unsafe { libc::time(std::ptr::null_mut()) };
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::localtime_r(&now, &mut tm) };
-        Outfit::for_date(tm.tm_mon as u32 + 1, tm.tm_mday as u32)
+        let t = crate::platform::local(crate::platform::now_epoch());
+        Outfit::for_date(t.month, t.day)
     }
 }
 

@@ -788,8 +788,16 @@ impl App {
         store::save(&saved);
     }
 
+    /// On Windows a reload restarts claude, so it waits for every reply to finish.
     pub fn reload_ready(&self) -> bool {
-        self.reload_pending
+        self.reload_pending && (cfg!(unix) || !self.sessions.iter().any(|s| s.busy()))
+    }
+
+    fn request_reload(&mut self) {
+        self.reload_pending = true;
+        if !self.reload_ready() {
+            self.current_mut().note("reloading as soon as Claude finishes replying", NoteKind::Info);
+        }
     }
 
     /// Hands every running `claude` over to the next den and writes the snapshot.
@@ -1089,10 +1097,10 @@ impl App {
         tokio::task::spawn_blocking(move || {
             use std::process::{Command, Stdio};
             let out = |cmd: &str, args: &[&str]| {
-                Command::new(cmd).args(args).stdin(Stdio::null()).output().ok().filter(|o| o.status.success())
+                Command::new(crate::platform::find_program(cmd)).args(args).stdin(Stdio::null()).output().ok().filter(|o| o.status.success())
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             };
-            let bin = std::env::var("DEN_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+            let bin = crate::claude::claude_bin().to_string_lossy().into_owned();
             let mut checks = Vec::new();
             let claude = out(&bin, &["--version"]);
             checks.push(match &claude {
@@ -1119,6 +1127,7 @@ impl App {
             };
             checks.push(check("Token squeezer", None, squeeze, ""));
             let term = std::env::var("TERM_PROGRAM").unwrap_or_default();
+            let term = if term.is_empty() && std::env::var_os("WT_SESSION").is_some() { "Windows Terminal".into() } else { term };
             checks.push(if term == "Apple_Terminal" {
                 check("Terminal", None, "Terminal.app", "rows with a background look striped there; Ghostty or iTerm2 draw them solid")
             } else {
@@ -1390,12 +1399,9 @@ impl App {
         let s = &mut self.sessions[i];
         let idx = s.start_shell(cmd);
         let (sid, cwd, cmd) = (s.sid, s.cwd.clone(), cmd.to_string());
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let out = tokio::process::Command::new(shell)
-                .arg("-c")
-                .arg(&cmd)
+            let out = tokio::process::Command::from(crate::platform::shell_command(&cmd))
                 .current_dir(cwd)
                 .stdin(std::process::Stdio::null())
                 .kill_on_drop(true)
@@ -1453,7 +1459,7 @@ impl App {
     fn local_command(&mut self, cmd: &str) -> bool {
         let (name, arg) = cmd.split_once(' ').map_or((cmd, ""), |(a, b)| (a, b.trim()));
         match name {
-            "reload" => self.reload_pending = true,
+            "reload" => self.request_reload(),
             "update" => {
                 self.toast("checking for updates…");
                 self.check_update(true);
@@ -1822,7 +1828,9 @@ impl App {
         if text.is_empty() {
             return;
         }
-        let copied = std::process::Command::new("pbcopy")
+        // Windows Terminal takes the OSC 52 copy below directly.
+        let copied = cfg!(unix)
+            && std::process::Command::new("pbcopy")
             .stdin(std::process::Stdio::piped())
             .spawn()
             .and_then(|mut c| {
@@ -1862,7 +1870,7 @@ impl App {
     pub fn all_workspaces(&self) -> Vec<PathBuf> {
         let mut out = self.workspaces.clone();
         let hidden = store::load_config().hidden_workspaces;
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = Some(crate::platform::home());
         let mut counts: Vec<(PathBuf, usize)> = Vec::new();
         for p in self.sessions.iter().map(|s| &s.cwd).chain(self.recent_projects.iter()) {
             let Some(parent) = p.parent() else { continue };
@@ -2449,7 +2457,7 @@ impl App {
                         Some(SideHit::NewButton) => self.open_new_modal(),
                         Some(SideHit::Board) => self.open_board(),
                         Some(SideHit::Files) => self.open_files(),
-                        Some(SideHit::Reload) => self.reload_pending = true,
+                        Some(SideHit::Reload) => self.request_reload(),
                         Some(SideHit::Settings) => self.open_modal(Modal::Settings { sel: 0 }),
                         None => {}
                     }
@@ -3063,11 +3071,26 @@ fn clipboard_image() -> Option<PathBuf> {
          on error\n close access f\n error \"none\"\n end try",
         path.display()
     );
-    let ok = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+    let ok = if cfg!(windows) {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Add-Type -AssemblyName System.Windows.Forms; $i = [Windows.Forms.Clipboard]::GetImage(); if ($i) { $i.Save($env:DEN_IMG) } else { exit 1 }",
+            ])
+            .env("DEN_IMG", &path)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    } else {
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
     (ok && std::fs::metadata(&path).is_ok_and(|m| m.len() > 0)).then_some(path)
 }
 
@@ -3152,21 +3175,15 @@ fn parse_limits(v: &Value) -> Vec<store::Limit> {
 
 /// Local wall-clock time like "3:40 PM".
 fn clock(epoch: u64) -> String {
-    let t = epoch as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    let (h, m) = (tm.tm_hour, tm.tm_min);
+    let t = crate::platform::local(epoch);
+    let (h, m) = (t.hour, t.minute);
     let h12 = if h % 12 == 0 { 12 } else { h % 12 };
     format!("{h12}:{m:02} {}", if h < 12 { "AM" } else { "PM" })
 }
 
 fn today() -> String {
-    std::process::Command::new("date")
-        .arg("+%Y-%m-%d")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    let t = crate::platform::local(crate::platform::now_epoch());
+    format!("{:04}-{:02}-{:02}", t.year, t.month, t.day)
 }
 
 fn base64(data: &[u8]) -> String {

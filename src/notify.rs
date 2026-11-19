@@ -13,7 +13,7 @@ const SCRIPT: &str = r#"on run
 end run"#;
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    crate::platform::home()
 }
 
 fn app_path() -> PathBuf {
@@ -65,6 +65,11 @@ fn one_line(s: &str) -> String {
 
 /// Posts "den — `title`: `body`". Runs in the background; never blocks.
 pub fn send(title: &str, body: &str) {
+    if cfg!(windows) {
+        let (title, body) = (one_line(title), one_line(body));
+        std::thread::spawn(move || toast(&title, &body));
+        return;
+    }
     if !cfg!(target_os = "macos") {
         return;
     }
@@ -85,4 +90,26 @@ pub fn send(title: &str, body: &str) {
         let script = format!("display notification \"{}\" with title \"den\" subtitle \"{}\"", esc(&body), esc(&title));
         let _ = quiet(Command::new("osascript").args(["-e", &script]));
     });
+}
+
+/// A Windows toast through PowerShell's WinRT bridge. Text goes in through
+/// environment variables, so nothing in it is ever run as script.
+fn toast(title: &str, body: &str) {
+    const PS: &str = r#"
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$x = New-Object Windows.Data.Xml.Dom.XmlDocument
+$x.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual></toast>')
+$t = $x.GetElementsByTagName('text')
+$t.Item(0).AppendChild($x.CreateTextNode('den - ' + $env:DEN_TITLE)) | Out-Null
+$t.Item(1).AppendChild($x.CreateTextNode($env:DEN_BODY)) | Out-Null
+$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($x))
+"#;
+    let _ = quiet(
+        Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", PS])
+            .env("DEN_TITLE", title)
+            .env("DEN_BODY", body),
+    );
 }

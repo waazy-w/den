@@ -14,8 +14,7 @@ fn is_scratch(p: &Path) -> bool {
 
 /// Recent project folders from Claude Code's history, newest first.
 pub fn discover() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME") else { return vec![] };
-    let root = PathBuf::from(home).join(".claude").join("projects");
+    let root = crate::platform::home().join(".claude").join("projects");
     let Ok(dirs) = std::fs::read_dir(root) else { return vec![] };
     let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
     for d in dirs.flatten() {
@@ -146,9 +145,8 @@ pub fn expand(p: &str) -> PathBuf {
     let cleaned = clean_path(p);
     let p = cleaned.as_str();
     if let Some(rest) = p.strip_prefix('~')
-        && let Some(home) = std::env::var_os("HOME")
     {
-        return PathBuf::from(home).join(rest.trim_start_matches('/'));
+        return crate::platform::home().join(rest.trim_start_matches(['/', '\\']));
     }
     PathBuf::from(p)
 }

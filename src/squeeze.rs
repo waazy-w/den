@@ -272,7 +272,7 @@ struct Rules {
 }
 
 fn load_rules(cwd: &Path) -> Rules {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = crate::platform::home();
     let files = [
         // Organization policy (can only add restrictions here).
         PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"),
@@ -359,6 +359,8 @@ pub fn hook() -> i32 {
     }
     let Ok(v) = serde_json::from_str::<Value>(&input) else { return 0 };
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "den".into());
+    // Claude Code's Bash on Windows is Git Bash, which wants C:/x/den.exe.
+    let exe = if cfg!(windows) { exe.replace('\\', "/") } else { exe };
     if let Some(out) = decide(&v, &exe) {
         println!("{out}");
     }
@@ -401,7 +403,7 @@ fn decide(v: &Value, exe: &str) -> Option<Value> {
 fn cache_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".cache"));
+        .unwrap_or_else(|| crate::platform::home().join(".cache"));
     base.join("den")
 }
 
@@ -420,18 +422,13 @@ pub fn savings() -> (u64, u64, u64) {
 /// Runs `args` with stdout and stderr merged, prints the squeezed output and
 /// exits with the command's status.
 pub fn run(args: &[String]) -> i32 {
-    use std::os::fd::FromRawFd;
     let Some((prog, rest)) = args.split_first() else { return 2 };
-    let mut fds = [0i32; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return 126;
-    }
-    let (r, w) = unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) };
+    let Ok((r, w)) = std::io::pipe() else { return 126 };
     let w2 = match w.try_clone() {
         Ok(f) => f,
         Err(_) => return 126,
     };
-    let child = std::process::Command::new(prog).args(rest).stdout(w).stderr(w2).spawn();
+    let child = std::process::Command::new(crate::platform::find_program(prog)).args(rest).stdout(w).stderr(w2).spawn();
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
@@ -443,8 +440,14 @@ pub fn run(args: &[String]) -> i32 {
     let mut r = r;
     let _ = r.read_to_end(&mut raw);
     let status = child.wait().map_or(1, |s| {
-        use std::os::unix::process::ExitStatusExt;
-        s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0))
+        #[cfg(unix)]
+        let signal = {
+            use std::os::unix::process::ExitStatusExt;
+            s.signal().unwrap_or(0)
+        };
+        #[cfg(not(unix))]
+        let signal = 0;
+        s.code().unwrap_or(128 + signal)
     });
     let text = String::from_utf8_lossy(&raw);
     let dir = cache_dir();
@@ -467,18 +470,24 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 fn save_private(path: &Path, data: &[u8]) {
-    use std::os::unix::fs::OpenOptionsExt;
     if let Some(d) = path.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(path) {
         let _ = f.write_all(data);
     }
 }
 
 /// Is RTK already rewriting commands (so den shouldn't add its own hook)?
 pub fn rtk_active() -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = crate::platform::home();
     std::fs::read_to_string(home.join(".claude/settings.json")).is_ok_and(|s| s.contains("rtk hook"))
 }
 

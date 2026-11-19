@@ -24,7 +24,22 @@ pub enum Outcome {
 
 /// Release asset for this machine, e.g. `den-aarch64-macos`.
 pub fn asset_name() -> String {
-    format!("den-{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+    format!("den-{}-{}{}", std::env::consts::ARCH, std::env::consts::OS, std::env::consts::EXE_SUFFIX)
+}
+
+/// Where a replaced den.exe goes: Windows can't overwrite a running program,
+/// but it can rename it out of the way.
+fn retired(exe: &Path) -> PathBuf {
+    exe.with_file_name("den.old.exe")
+}
+
+/// Deletes the den.exe a Windows update left behind once it's no longer running.
+pub fn clean_retired() {
+    if cfg!(windows)
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let _ = std::fs::remove_file(retired(&exe));
+    }
 }
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
@@ -173,7 +188,7 @@ fn download(src: &Source, tag: &str, asset: &str, dest: &Path) -> Result<(), Str
 
 /// Downloads the release next to `exe`, checks it runs, then swaps it in.
 fn install(src: &Source, tag: &str, asset: &str, exe: &Path) -> Result<(), String> {
-    let tmp = exe.with_file_name(format!(".den-update-{}", std::process::id()));
+    let tmp = exe.with_file_name(format!(".den-update-{}{}", std::process::id(), std::env::consts::EXE_SUFFIX));
     let result = (|| {
         download(src, tag, asset, &tmp)?;
         #[cfg(unix)]
@@ -185,6 +200,15 @@ fn install(src: &Source, tag: &str, asset: &str, exe: &Path) -> Result<(), Strin
         let says = String::from_utf8_lossy(&out.stdout);
         if !out.status.success() || !says.contains(tag.trim_start_matches('v')) {
             return Err(format!("new build reported {:?}", says.trim()));
+        }
+        if cfg!(windows) {
+            let old = retired(exe);
+            let _ = std::fs::remove_file(&old);
+            std::fs::rename(exe, &old).map_err(|e| format!("couldn't move {} aside: {e}", exe.display()))?;
+            return std::fs::rename(&tmp, exe).map_err(|e| {
+                let _ = std::fs::rename(&old, exe);
+                format!("couldn't replace {}: {e}", exe.display())
+            });
         }
         std::fs::rename(&tmp, exe).map_err(|e| format!("couldn't replace {}: {e}", exe.display()))
     })();

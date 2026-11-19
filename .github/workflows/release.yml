@@ -16,6 +16,7 @@ jobs:
           - { os: macos-latest, target: x86_64-apple-darwin, asset: den-x86_64-macos }
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, asset: den-x86_64-linux }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: den-aarch64-linux }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: den-x86_64-windows.exe }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,13 +36,19 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: package
         # ctui-* copies keep installs from before the rename updating.
+        shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/den ${{ matrix.asset }}
-          a="${{ matrix.asset }}"
-          cp "$a" "ctui-${a#den-}"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/den.exe ${{ matrix.asset }}
+          else
+            cp target/${{ matrix.target }}/release/den ${{ matrix.asset }}
+            a="${{ matrix.asset }}"
+            cp "$a" "ctui-${a#den-}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
+          if-no-files-found: ignore
           path: |
             ${{ matrix.asset }}
             ctui-*

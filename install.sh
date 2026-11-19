@@ -9,7 +9,8 @@ DEST="${DEN_INSTALL_DIR:-$HOME/.local/bin}"
 case "$(uname -s)" in
   Darwin) os=macos ;;
   Linux) os=linux ;;
-  *) echo "den runs on macOS and Linux (on Windows, use WSL)." >&2; exit 1 ;;
+  MINGW* | MSYS* | CYGWIN*) echo "on Windows, run this in PowerShell instead:  irm https://raw.githubusercontent.com/waazy-w/den/main/install.ps1 | iex" >&2; exit 1 ;;
+  *) echo "den runs on macOS, Linux and Windows." >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;

@@ -4,6 +4,7 @@ mod claude;
 mod files;
 mod input;
 mod notify;
+mod platform;
 mod projects;
 mod session;
 mod squeeze;
@@ -95,6 +96,10 @@ fn restore_extras(mouse: bool) {
 }
 
 /// Installs from before the rename run as `ctui`; add a `den` beside it.
+#[cfg(not(unix))]
+fn link_new_name() {}
+
+#[cfg(unix)]
 fn link_new_name() {
     let Ok(exe) = std::env::current_exe() else { return };
     if exe.file_name().is_some_and(|n| n == "ctui") {
@@ -117,6 +122,7 @@ async fn main() -> Result<()> {
     store::migrate_legacy();
     let opts = parse_args()?;
     link_new_name();
+    update::clean_retired();
     theme::init();
 
     let mut terminal = ratatui::init();
@@ -150,7 +156,6 @@ async fn main() -> Result<()> {
     restore_extras(mouse);
     ratatui::restore();
     if let Ok(true) = result {
-        use std::os::unix::process::CommandExt;
         // On Linux a self-update leaves "/path/den (deleted)"; run the new file.
         let exe = std::env::current_exe()?;
         let exe = match exe.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
@@ -162,7 +167,17 @@ async fn main() -> Result<()> {
         if !mouse {
             cmd.arg("--no-mouse");
         }
-        let err = cmd.exec();
+        #[cfg(unix)]
+        let err = {
+            use std::os::unix::process::CommandExt;
+            cmd.exec()
+        };
+        // No exec on Windows: run the new den in this console and pass on its exit code.
+        #[cfg(not(unix))]
+        let err = match cmd.status() {
+            Ok(st) => std::process::exit(st.code().unwrap_or(0)),
+            Err(e) => e,
+        };
         anyhow::bail!("reload failed: {err}\nYour chats were saved; run `den` to pick up exactly where you left off.");
     }
     result.map(|_| ())
@@ -174,9 +189,13 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool
     let mut app = app::App::new(tx, opts.dir, opts.open_new, opts.reloaded);
     let mut events = EventStream::new();
     // Closing the terminal window or `kill` still saves everything on the way out.
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut hangup = signal(SignalKind::hangup())?;
-    let mut terminate = signal(SignalKind::terminate())?;
+    #[cfg(unix)]
+    let (mut hangup, mut terminate) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        (signal(SignalKind::hangup())?, signal(SignalKind::terminate())?)
+    };
+    #[cfg(windows)]
+    let (mut hangup, mut terminate) = (tokio::signal::windows::ctrl_close()?, tokio::signal::windows::ctrl_shutdown()?);
 
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;

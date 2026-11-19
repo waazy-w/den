@@ -56,7 +56,7 @@ pub struct Live {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    crate::platform::home()
 }
 
 fn config_root() -> PathBuf {

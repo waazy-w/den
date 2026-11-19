@@ -22,7 +22,11 @@ den            # restore saved sessions (or start one here)
 den ~/code/api # also open a new session in that directory
 ```
 
-Windows: run it inside [WSL](https://learn.microsoft.com/windows/wsl/install) (den needs a Unix terminal).
+On Windows, in PowerShell (Windows Terminal recommended):
+
+```powershell
+irm https://raw.githubusercontent.com/waazy-w/den/main/install.ps1 | iex
+```
 
 **Updates are automatic.** Every few hours den checks GitHub for a new release, installs it in the
 background and tells you; `/reload` switches to it without stopping anything Claude is doing.
@@ -95,6 +99,7 @@ Hover a session in the sidebar and click its `×` to delete it (Claude Code keep
 `/reload` restarts den in place (picking up a newly installed build) without interrupting Claude:
 running `claude` processes keep working and the new den reattaches to their pipes, so replies keep
 streaming, running tools finish, and pending approvals and queued messages carry over.
+(On Windows, `/reload` waits for Claude to finish replying, then restarts it on the same conversation.)
 `/style` sets how much Claude explains; den sessions default to Claude Code's `default` style.
 
 The sidebar shows what each session is doing (`editing fetch.rs`, `waiting for you`, `done · 2m ago`),

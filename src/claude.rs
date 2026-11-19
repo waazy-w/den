@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,11 +27,12 @@ pub enum AppEvent {
 }
 
 /// A running `claude` process and the tasks pumping its pipes.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub struct Proc {
     tx: Option<mpsc::UnboundedSender<String>>,
     pid: u32,
-    stdin_fd: RawFd,
-    stdout_fd: RawFd,
+    stdin_fd: i32,
+    stdout_fd: i32,
     log: PathBuf,
     /// Bytes read from stdout that don't yet form a complete line.
     leftover: Arc<Mutex<Vec<u8>>>,
@@ -41,15 +43,15 @@ pub struct Proc {
     /// Inherited across `/reload`: no waiter task, so kill by pid.
     adopted: bool,
     /// Duplicate of stdout taken before the reader (which owns the original) stops.
-    stdout_dup: RawFd,
+    stdout_dup: i32,
 }
 
 /// What a reloaded den needs to keep talking to a still-running `claude`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Handoff {
     pub pid: u32,
-    pub stdin_fd: RawFd,
-    pub stdout_fd: RawFd,
+    pub stdin_fd: i32,
+    pub stdout_fd: i32,
     pub log: PathBuf,
     #[serde(default)]
     pub leftover: Vec<u8>,
@@ -60,9 +62,7 @@ impl Drop for Proc {
         if let Some(k) = self.kill.take() {
             let _ = k.send(());
         } else if self.adopted && self.pid > 0 {
-            unsafe {
-                libc::kill(self.pid as i32, libc::SIGTERM);
-            }
+            crate::platform::terminate(self.pid);
         }
     }
 }
@@ -85,9 +85,12 @@ pub struct Spawn<'a> {
 /// Per-user, owner-only log folder (`$XDG_CACHE_HOME/den/logs` or ~/.cache/den/logs).
 fn log_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(".cache")
+        crate::platform::home().join(".cache")
     });
     let dir = base.join("den").join("logs");
+    #[cfg(not(unix))]
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
@@ -157,9 +160,13 @@ async fn write_loop<W: AsyncWrite + Unpin>(mut w: W, mut rx: mpsc::UnboundedRece
     }
 }
 
+/// The `claude` to run: $DEN_CLAUDE_BIN, or `claude` found on PATH.
+pub fn claude_bin() -> PathBuf {
+    std::env::var_os("DEN_CLAUDE_BIN").map(PathBuf::from).unwrap_or_else(|| crate::platform::find_program("claude"))
+}
+
 pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Proc> {
-    let bin = std::env::var("DEN_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-    let mut cmd = Command::new(bin);
+    let mut cmd = Command::new(claude_bin());
     cmd.args([
         "-p",
         "--input-format",
@@ -185,7 +192,11 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
         settings.insert("outputStyle".into(), json!(st));
     }
     if let Some(exe) = opts.squeeze_hook {
-        let quoted = format!("'{}'", exe.replace('\'', "'\\''"));
+        let quoted = if cfg!(windows) {
+            format!("\"{}\"", exe.replace('\\', "/"))
+        } else {
+            format!("'{}'", exe.replace('\'', "'\\''"))
+        };
         settings.insert(
             "hooks".into(),
             json!({"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": format!("{quoted} hook")}]}]}),
@@ -205,6 +216,9 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
         cmd.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
     }
     let log = log_path(opts.sid);
+    #[cfg(not(unix))]
+    let err_file = std::fs::OpenOptions::new().write(true).create_new(true).open(&log).context("couldn't create claude log file")?;
+    #[cfg(unix)]
     let err_file = {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
@@ -223,7 +237,10 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
     let mut child = cmd.spawn().context("failed to start `claude` (is it on PATH?)")?;
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
+    #[cfg(unix)]
     let (stdin_fd, stdout_fd) = (stdin.as_raw_fd(), stdout.as_raw_fd());
+    #[cfg(not(unix))]
+    let (stdin_fd, stdout_fd) = (-1, -1);
     let pid = child.id().unwrap_or(0);
     let (sid, generation) = (opts.sid, opts.generation);
 
@@ -261,10 +278,17 @@ pub fn spawn(opts: Spawn, events: mpsc::UnboundedSender<AppEvent>) -> Result<Pro
     })
 }
 
+/// Windows has no exec: `/reload` restarts claude with --resume instead.
+#[cfg(not(unix))]
+pub fn adopt(_sid: usize, _generation: u64, h: Handoff, _events: mpsc::UnboundedSender<AppEvent>) -> Result<Proc> {
+    anyhow::bail!("claude process {} can't be handed over on this system", h.pid)
+}
+
 /// Reattaches to a `claude` that survived a `/reload` (same pid, inherited pipes).
+#[cfg(unix)]
 pub fn adopt(sid: usize, generation: u64, h: Handoff, events: mpsc::UnboundedSender<AppEvent>) -> Result<Proc> {
     use tokio::net::unix::pipe;
-    let alive = unsafe { libc::kill(h.pid as i32, 0) } == 0;
+    let alive = crate::platform::alive(h.pid);
     anyhow::ensure!(alive, "claude process {} is gone", h.pid);
     // Don't leak these pipe ends into processes we spawn later.
     for fd in [h.stdin_fd, h.stdout_fd] {
@@ -308,6 +332,7 @@ impl Proc {
     /// returns duplicated pipe fds that survive exec. The process keeps running.
     /// Stops the stdout reader; unread bytes stay in `leftover`.
     pub async fn pause_reader(&mut self) {
+        #[cfg(unix)]
         if self.stdout_dup < 0 {
             self.stdout_dup = unsafe { libc::dup(self.stdout_fd) };
         }
@@ -317,6 +342,12 @@ impl Proc {
         }
     }
 
+    #[cfg(not(unix))]
+    pub async fn handoff(self) -> Option<Handoff> {
+        None
+    }
+
+    #[cfg(unix)]
     pub async fn handoff(mut self) -> Option<Handoff> {
         if self.stdout_dup < 0 {
             self.stdout_dup = unsafe { libc::dup(self.stdout_fd) };
@@ -383,8 +414,7 @@ impl Proc {
 /// Starts a short-lived `claude` just to read its command catalog.
 pub fn fetch_catalog(cwd: std::path::PathBuf, events: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
-        let bin = std::env::var("DEN_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-        let Ok(mut child) = Command::new(bin)
+        let Ok(mut child) = Command::new(claude_bin())
             .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
             .current_dir(&cwd)
             .stdin(Stdio::piped())
