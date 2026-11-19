@@ -101,6 +101,12 @@ pub fn resolve_slug(slug: &str) -> Option<PathBuf> {
         entries.sort_by_key(|(n, _)| std::cmp::Reverse(n.len()));
         entries.into_iter().find_map(|(n, p)| walk(&p, &rest[n.len()..], depth + 1))
     }
+    // Windows: "C:\Users\me" becomes "C--Users-me"; start at that drive.
+    let b = slug.as_bytes();
+    if cfg!(windows) && b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b'-' {
+        let root = PathBuf::from(format!("{}:\\", b[0] as char));
+        return walk(&root, &slug[2..], 0);
+    }
     walk(Path::new("/"), slug, 0)
 }
 
@@ -257,6 +263,8 @@ mod tests {
         let base = std::env::temp_dir().join("den slug test").join("my.app");
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
+        // Windows canonical paths carry a \\?\ prefix Claude Code never sees.
+        let base = PathBuf::from(base.to_string_lossy().trim_start_matches(r"\\?\"));
         let slug: String = base.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         assert_eq!(resolve_slug(&slug), Some(base));
     }

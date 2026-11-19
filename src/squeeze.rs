@@ -273,10 +273,19 @@ struct Rules {
 
 fn load_rules(cwd: &Path) -> Rules {
     let home = crate::platform::home();
+    let program_data = std::env::var_os("ProgramData").map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
+    let managed = if cfg!(windows) {
+        [program_data.join(r"ClaudeCode\managed-settings.json"), program_data.join(r"ClaudeCode\managed-settings.json")]
+    } else {
+        [
+            PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"),
+            PathBuf::from("/etc/claude-code/managed-settings.json"),
+        ]
+    };
     let files = [
         // Organization policy (can only add restrictions here).
-        PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"),
-        PathBuf::from("/etc/claude-code/managed-settings.json"),
+        managed[0].clone(),
+        managed[1].clone(),
         home.join(".claude/settings.json"),
         home.join(".claude/settings.local.json"),
         cwd.join(".claude/settings.json"),
@@ -335,7 +344,10 @@ fn harmless(part: &str) -> bool {
     let w: Vec<&str> = part.split_whitespace().collect();
     match w.as_slice() {
         ["pwd"] => true,
-        ["cd", dir] => !dir.starts_with('/') && !dir.starts_with('~') && !dir.split('/').any(|c| c == ".."),
+        // Only plain relative folders: no roots, drives, home, or `..` (either slash).
+        ["cd", dir] => {
+            !dir.starts_with(['/', '\\', '~']) && !dir.contains(':') && !dir.split(['/', '\\']).any(|c| c == "..")
+        }
         _ => false,
     }
 }
@@ -557,6 +569,9 @@ mod tests {
         assert!(!allowed(&none, "cargo test"));
         assert!(allowed(&none, "cd src"));
         assert!(!allowed(&none, "cd ../.."));
+        assert!(!allowed(&none, r"cd ..\.."));
+        assert!(!allowed(&none, r"cd C:\Windows"));
+        assert!(!allowed(&none, r"cd \\server\share"));
         assert!(!allowed(&none, "cat secret"));
         let rules = Rules { allow: vec!["Bash(cargo build:*)".into()], deny: vec![] };
         assert!(allowed(&rules, "cargo build --release"));

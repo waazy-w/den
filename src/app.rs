@@ -424,7 +424,9 @@ impl App {
             forecast_warned: std::collections::HashSet::new(),
             last_update_check: Instant::now(),
             outfit_today: crate::ui::companion::Outfit::today(),
-            squeeze_hook: (!crate::squeeze::rtk_active())
+            // Off on Windows: Claude Code's shell there differs from the one
+            // the squeezer's command parsing and permission checks assume.
+            squeeze_hook: (cfg!(unix) && !crate::squeeze::rtk_active())
                 .then(|| std::env::current_exe().ok())
                 .flatten()
                 .map(|p| p.to_string_lossy().into_owned()),
