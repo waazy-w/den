@@ -163,7 +163,7 @@ async fn main() -> Result<()> {
             cmd.arg("--no-mouse");
         }
         let err = cmd.exec();
-        anyhow::bail!("reload failed: {err}");
+        anyhow::bail!("reload failed: {err}\nYour chats were saved; run `den` to pick up exactly where you left off.");
     }
     result.map(|_| ())
 }
@@ -173,6 +173,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut app = app::App::new(tx, opts.dir, opts.open_new, opts.reloaded);
     let mut events = EventStream::new();
+    // Closing the terminal window or `kill` still saves everything on the way out.
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut terminate = signal(SignalKind::terminate())?;
 
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
@@ -184,6 +188,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool
         }
         let next_frame = app.frame_interval();
         tokio::select! {
+            _ = hangup.recv() => break,
+            _ = terminate.recv() => break,
             ev = events.next() => match ev {
                 Some(Ok(e)) => { app.on_term(e); dirty = true; }
                 Some(Err(_)) | None => break,

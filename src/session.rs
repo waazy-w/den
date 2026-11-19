@@ -1373,6 +1373,32 @@ impl Session {
 
     /// Replays a transcript; with `live`, unfinished tools stay running because
     /// the same `claude` process is still working on them.
+    /// The last few hundred user and assistant messages, as a fallback copy
+    /// for /reload. `true` marks the user's own lines.
+    pub fn chat_backup(&self) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = self
+            .entries
+            .iter()
+            .rev()
+            .filter_map(|e| match &e.item {
+                Item::User(t) => Some((true, t.clone())),
+                Item::Assistant(t) => Some((false, t.clone())),
+                _ => None,
+            })
+            .take(400)
+            .collect();
+        out.reverse();
+        out
+    }
+
+    pub fn restore_chat(&mut self, chat: &[(bool, String)]) {
+        self.replaying = true;
+        for (user, text) in chat {
+            self.push(if *user { Item::User(text.clone()) } else { Item::Assistant(text.clone()) });
+        }
+        self.replaying = false;
+    }
+
     pub fn load_history_opts(&mut self, jsonl: &str, live: bool) {
         self.replaying = true;
         for line in jsonl.lines() {

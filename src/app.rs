@@ -444,9 +444,15 @@ impl App {
         if app.lifetime.since.is_none() {
             app.lifetime.since = Some(today());
         }
-        let snapshot = if reloaded { store::take_snapshot() } else { None };
+        // A snapshot left behind by a reload that never finished is used too;
+        // its claude processes are gone, but everything else comes back.
+        let snapshot = store::take_snapshot();
         let saved_list = match &snapshot {
-            Some(snap) => snap.sessions.clone(),
+            Some(snap) => {
+                let mut list = snap.sessions.clone();
+                store::merge_missing(&mut list, store::load());
+                list
+            }
             None => store::load(),
         };
         for saved in saved_list {
@@ -463,6 +469,7 @@ impl App {
             s.effort = saved.effort;
             s.resume_at = saved.resume_at;
             s.pins = saved.pins;
+            s.queue = saved.queue.into();
             s.usage = saved.usage;
             let live = saved.live.clone();
             let mut transcript = None;
@@ -474,7 +481,11 @@ impl App {
                 }
                 s.claude_id = Some(id.clone());
             }
-            if let Some(l) = live {
+            if let Some(l) = live.clone().filter(|_| !reloaded) {
+                if s.queue.is_empty() {
+                    s.queue = l.queue.into();
+                }
+            } else if let Some(l) = live {
                 app.next_gen += 1;
                 let generation = app.next_gen;
                 match claude::adopt(s.sid, generation, l.handoff, app.tx.clone()) {
@@ -496,8 +507,19 @@ impl App {
                             }
                         }
                     }
-                    Err(e) => s.note(format!("couldn't reattach: {e:#}"), NoteKind::Error),
+                    Err(e) => {
+                        if s.queue.is_empty() {
+                            s.queue = l.queue.into();
+                        }
+                        s.note(
+                            format!("couldn't reattach to the running claude ({e:#}); your chat is safe and continues on your next message"),
+                            NoteKind::Error,
+                        );
+                    }
                 }
+            }
+            if s.entries.is_empty() {
+                s.restore_chat(&saved.chat);
             }
             if saved.ctx_used > 0 {
                 s.ctx_used = saved.ctx_used;
@@ -755,6 +777,8 @@ impl App {
             effort: s.effort.clone(),
             resume_at: s.resume_at,
             pins: s.pins.clone(),
+            queue: s.queue.iter().cloned().collect(),
+            chat: Vec::new(),
             live: None,
         }
     }
@@ -771,6 +795,7 @@ impl App {
     /// Hands every running `claude` over to the next den and writes the snapshot.
     /// `rx` is drained after readers stop so no received event is lost.
     pub async fn write_snapshot(&mut self, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> bool {
+        self.reload_pending = false;
         let mut handoffs = HashMap::new();
         // 1. stop readers; 2. handle everything already received (replies still
         // flow); 3. flush writers and take over the pipes.
@@ -794,6 +819,7 @@ impl App {
             .iter()
             .map(|s| {
                 let mut sv = Self::saved(s);
+                sv.chat = s.chat_backup();
                 if let Some(h) = handoffs.remove(&s.sid) {
                     sv.live = Some(store::Live {
                         handoff: h,
@@ -808,12 +834,28 @@ impl App {
                 sv
             })
             .collect();
-        store::save_snapshot(&store::Snapshot {
+        let snap = store::Snapshot {
             sessions,
             active: self.active,
             draft: self.editor.text.clone(),
             history: self.editor.history().iter().rev().take(200).rev().cloned().collect(),
-        })
+        };
+        if store::save_snapshot(&snap) {
+            return true;
+        }
+        // Couldn't save: stay in this den and take the claude processes back.
+        for (s, sv) in self.sessions.iter_mut().zip(snap.sessions) {
+            let Some(l) = sv.live else { continue };
+            self.next_gen += 1;
+            match claude::adopt(s.sid, self.next_gen, l.handoff, self.tx.clone()) {
+                Ok(p) => {
+                    self.procs.insert(s.sid, (self.next_gen, p));
+                }
+                Err(e) => s.note(format!("claude stopped ({e:#}); your chat continues on your next message"), NoteKind::Error),
+            }
+        }
+        self.current_mut().note("reload cancelled: couldn't save the session snapshot, so nothing was lost", NoteKind::Error);
+        false
     }
 
     fn idx_of(&self, sid: usize) -> Option<usize> {

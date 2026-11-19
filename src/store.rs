@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Saved {
@@ -27,6 +27,13 @@ pub struct Saved {
     pub resume_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pins: Vec<String>,
+    /// Messages waiting to be sent, so a restart never drops them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue: Vec<(String, serde_json::Value)>,
+    /// Only in reload snapshots: the chat as den showed it, used when Claude
+    /// Code's own transcript can't be found or read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chat: Vec<(bool, String)>,
     /// Only in reload snapshots: a still-running `claude` to reattach to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,
@@ -211,43 +218,112 @@ fn snapshot_file() -> PathBuf {
     config_dir().join("reload.json")
 }
 
-pub fn save_snapshot(s: &Snapshot) -> bool {
-    let _ = std::fs::create_dir_all(config_dir());
-    serde_json::to_string(s).ok().is_some_and(|j| std::fs::write(snapshot_file(), j).is_ok())
+/// Writes via a synced temp file and a rename, so a crash mid-write leaves the
+/// old file whole. With `backup`, the previous version is kept as `<name>.bak`.
+fn write_atomic(path: &Path, data: &[u8], backup: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    drop(f);
+    if backup && path.is_file() {
+        let _ = std::fs::copy(path, path.with_extension("json.bak"));
+    }
+    std::fs::rename(&tmp, path)
 }
 
-pub fn take_snapshot() -> Option<Snapshot> {
-    let text = std::fs::read_to_string(snapshot_file()).ok()?;
-    match serde_json::from_str(&text) {
-        Ok(s) => {
-            let _ = std::fs::remove_file(snapshot_file());
-            Some(s)
-        }
-        Err(_) => {
-            // Unreadable (e.g. written by another version): keep it, never lose it.
-            let _ = std::fs::rename(snapshot_file(), config_dir().join("reload.unread.json"));
-            None
-        }
+pub fn save_snapshot(s: &Snapshot) -> bool {
+    let Ok(json) = serde_json::to_vec(s) else { return false };
+    // Read it back before trusting it: the next den must be able to load it.
+    if serde_json::from_slice::<Snapshot>(&json).is_err() {
+        return false;
     }
+    write_atomic(&snapshot_file(), &json, false).is_ok()
+}
+
+/// Parses a snapshot, salvaging what it can from one written by another
+/// version: sessions one by one, dropping only a part that no longer fits.
+fn parse_snapshot(text: &str) -> Option<(Snapshot, bool)> {
+    if let Ok(s) = serde_json::from_str::<Snapshot>(text) {
+        return Some((s, true));
+    }
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let mut whole = true;
+    let sessions = v
+        .get("sessions")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    serde_json::from_value::<Saved>(x.clone()).ok().or_else(|| {
+                        whole = false;
+                        let mut x = x.clone();
+                        let queue = x.pointer("/live/queue").cloned();
+                        let o = x.as_object_mut()?;
+                        o.remove("live");
+                        if let Some(q) = queue {
+                            o.entry("queue").or_insert(q);
+                        }
+                        serde_json::from_value(x).ok()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let str_of = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let snap = Snapshot {
+        sessions,
+        active: v.get("active").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        draft: str_of("draft"),
+        history: serde_json::from_value(v.get("history").cloned().unwrap_or_default()).unwrap_or_default(),
+    };
+    Some((snap, false))
+}
+
+/// Takes the snapshot left by `/reload` (or by a reload that never finished).
+/// The file is kept as `reload.prev.json`, never just deleted.
+pub fn take_snapshot() -> Option<Snapshot> {
+    let file = snapshot_file();
+    let text = std::fs::read_to_string(&file).ok()?;
+    let parsed = parse_snapshot(&text);
+    let keep = match &parsed {
+        Some((_, true)) => "reload.prev.json",
+        _ => "reload.unread.json",
+    };
+    let _ = std::fs::rename(&file, config_dir().join(keep));
+    parsed.map(|(s, _)| s)
+}
+
+fn read_sessions(path: &Path) -> Option<Vec<Saved>> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
 pub fn load() -> Vec<Saved> {
-    std::fs::read_to_string(state_file())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let path = state_file();
+    read_sessions(&path)
+        .or_else(|| read_sessions(&path.with_extension("json.bak")))
         .unwrap_or_default()
 }
 
-pub fn save(sessions: &[Saved]) {
-    let path = state_file();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(sessions) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, path);
+/// Adds saved sessions the snapshot doesn't have, so nothing goes missing
+/// when the two disagree.
+pub fn merge_missing(snap: &mut Vec<Saved>, saved: Vec<Saved>) {
+    for sv in saved {
+        let known = sv.claude_id.is_some()
+            && snap.iter().any(|x| x.claude_id == sv.claude_id || x.live.as_ref().is_some_and(|l| l.claude_id == sv.claude_id));
+        if !known {
+            snap.push(sv);
         }
+    }
+}
+
+pub fn save(sessions: &[Saved]) {
+    if let Ok(json) = serde_json::to_string_pretty(sessions) {
+        let _ = write_atomic(&state_file(), json.as_bytes(), true);
     }
 }
 
@@ -286,4 +362,35 @@ mod tests {
         assert!(!old.exists() && base.join("ctui.migrated").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
+    #[test]
+    fn snapshot_salvage_keeps_sessions_when_live_part_is_unreadable() {
+        let text = r#"{"sessions":[{"name":"a","cwd":"/x","claude_id":"A","live":{"handoff":"new format","queue":[["hi",null]]}},{"name":"b","cwd":"/y","claude_id":"B"}],"active":1,"draft":"half typed","future_field":3}"#;
+        let (s, whole) = parse_snapshot(text).unwrap();
+        assert!(!whole);
+        assert_eq!(s.sessions.len(), 2);
+        assert!(s.sessions[0].live.is_none());
+        assert_eq!(s.sessions[0].queue.len(), 1);
+        assert_eq!((s.active, s.draft.as_str()), (1, "half typed"));
+    }
+
+    #[test]
+    fn merge_adds_only_missing_sessions() {
+        let mk = |id: &str| Saved { claude_id: Some(id.into()), ..serde_json::from_str(r#"{"name":"n","cwd":"/x","claude_id":null}"#).unwrap() };
+        let mut snap = vec![mk("A")];
+        merge_missing(&mut snap, vec![mk("A"), mk("B")]);
+        let ids: Vec<_> = snap.iter().map(|s| s.claude_id.clone().unwrap()).collect();
+        assert_eq!(ids, ["A", "B"]);
+    }
+
+    #[test]
+    fn atomic_write_keeps_a_backup() {
+        let dir = std::env::temp_dir().join(format!("den-atomic-{}", std::process::id()));
+        let f = dir.join("sessions.json");
+        write_atomic(&f, b"[1]", true).unwrap();
+        write_atomic(&f, b"[2]", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "[2]");
+        assert_eq!(std::fs::read_to_string(dir.join("sessions.json.bak")).unwrap(), "[1]");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }
