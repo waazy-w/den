@@ -270,6 +270,90 @@ impl Agent {
     }
 }
 
+/// Seconds since the epoch for an RFC 3339 UTC stamp like "2026-11-17T15:10:52.112Z".
+fn stamp_secs(t: &str) -> Option<u64> {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (hh, mm, ss) = (n(11..13)?, n(14..16)?, n(17..19)?);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
+}
+
+/// Subagents still running according to a transcript: launched, and neither
+/// answered nor (for background ones) reported done by a task notification.
+/// Lets cards come back after /reload even without a snapshot of them.
+pub fn running_agents(jsonl: &str) -> Vec<Agent> {
+    let mut found: Vec<(String, Value, Option<u64>)> = Vec::new();
+    let mut ended: HashSet<String> = HashSet::new();
+    let mut background: HashSet<String> = HashSet::new();
+    for line in jsonl.lines() {
+        if !line.contains("toolu_") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let at = v.get("timestamp").and_then(Value::as_str).and_then(stamp_secs);
+        let text = match &v["message"]["content"] {
+            Value::String(s) => s.as_str(),
+            _ => v.get("content").and_then(Value::as_str).unwrap_or(""),
+        };
+        if text.contains("<task-notification>") {
+            for part in text.split("<tool-use-id>").skip(1) {
+                if let Some(id) = part.split("</tool-use-id>").next() {
+                    ended.insert(id.trim().to_string());
+                }
+            }
+        }
+        let Some(blocks) = v["message"]["content"].as_array() else { continue };
+        for b in blocks {
+            match tools::s(b, "type") {
+                "tool_use" if matches!(tools::s(b, "name"), "Agent" | "Task") => {
+                    found.push((tools::s(b, "id").to_string(), b.get("input").cloned().unwrap_or(Value::Null), at));
+                }
+                "tool_result" => {
+                    let id = tools::s(b, "tool_use_id").to_string();
+                    let out = tools::result_text(b.get("content").unwrap_or(&Value::Null));
+                    if out.starts_with("Async agent launched") {
+                        background.insert(id);
+                    } else {
+                        ended.insert(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let now = Instant::now();
+    let wall = now_secs();
+    found
+        .into_iter()
+        .filter(|(id, _, _)| !ended.contains(id))
+        .map(|(id, input, at)| Agent {
+            kind: tools::s(&input, "subagent_type").to_string(),
+            desc: tools::s(&input, "description").to_string(),
+            activity: String::new(),
+            log: Vec::new(),
+            status: AgentStatus::Running,
+            started: at
+                .and_then(|t| now.checked_sub(Duration::from_secs(wall.saturating_sub(t))))
+                .unwrap_or(now),
+            finished: None,
+            tools: 0,
+            tokens: 0,
+            background: background.contains(&id),
+            id,
+        })
+        .collect()
+}
+
 /// A subagent launched by the Agent/Task tool, with its own activity log.
 #[derive(Debug, Clone)]
 pub struct Agent {
@@ -1611,4 +1695,21 @@ mod tests {
         s.load_history(&h);
         assert_eq!(texts(&s), vec!["U:real question", "A:answer"]);
     }
+    #[test]
+    fn rebuilds_running_agents_from_transcript() {
+        let j = [
+            r#"{"type":"assistant","timestamp":"2026-11-17T15:00:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"fg","subagent_type":"Explore"}},{"type":"tool_use","id":"toolu_B","name":"Agent","input":{"description":"bg"}},{"type":"tool_use","id":"toolu_C","name":"Agent","input":{"description":"done"}},{"type":"tool_use","id":"toolu_D","name":"Agent","input":{"description":"bg done"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"Async agent launched successfully"},{"type":"tool_result","tool_use_id":"toolu_C","content":"all good"},{"type":"tool_result","tool_use_id":"toolu_D","content":"Async agent launched successfully"}]}}"#,
+            r#"{"type":"user","message":{"content":"<task-notification>\n<tool-use-id>toolu_D</tool-use-id>\n</task-notification>"}}"#,
+        ]
+        .join("\n");
+        let a = running_agents(&j);
+        let ids: Vec<&str> = a.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["toolu_A", "toolu_B"]);
+        assert_eq!(a[0].kind, "Explore");
+        assert!(!a[0].background && a[1].background);
+        assert!(a[0].started.elapsed().as_secs() > 60);
+        assert_eq!(stamp_secs("1970-01-02T00:00:01Z"), Some(86_401));
+    }
+
 }

@@ -465,10 +465,12 @@ impl App {
             s.pins = saved.pins;
             s.usage = saved.usage;
             let live = saved.live.clone();
+            let mut transcript = None;
             let claude_id = saved.claude_id.clone().or_else(|| live.as_ref().and_then(|l| l.claude_id.clone()));
             if let Some(id) = &claude_id {
                 if let Some(h) = store::transcript(id) {
                     s.load_history_opts(&h, live.as_ref().is_some_and(|l| l.busy));
+                    transcript = Some(h);
                 }
                 s.claude_id = Some(id.clone());
             }
@@ -488,6 +490,11 @@ impl App {
                         s.permissions = l.permissions.into();
                         s.queue = l.queue.into();
                         s.agents = l.agents.into_iter().map(crate::session::Agent::from_snap).collect();
+                        for a in transcript.as_deref().map(crate::session::running_agents).unwrap_or_default() {
+                            if !s.agents.iter().any(|x| x.id == a.id) {
+                                s.agents.push(a);
+                            }
+                        }
                     }
                     Err(e) => s.note(format!("couldn't reattach: {e:#}"), NoteKind::Error),
                 }
