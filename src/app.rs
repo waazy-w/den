@@ -487,6 +487,7 @@ impl App {
                         }
                         s.permissions = l.permissions.into();
                         s.queue = l.queue.into();
+                        s.agents = l.agents.into_iter().map(crate::session::Agent::from_snap).collect();
                     }
                     Err(e) => s.note(format!("couldn't reattach: {e:#}"), NoteKind::Error),
                 }
@@ -794,6 +795,7 @@ impl App {
                         permissions: s.permissions.iter().cloned().collect(),
                         queue: s.queue.iter().cloned().collect(),
                         claude_id: s.claude_id.clone(),
+                        agents: s.agents.iter().map(crate::session::Agent::snap).collect(),
                     });
                 }
                 sv

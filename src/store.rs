@@ -43,6 +43,9 @@ pub struct Live {
     pub queue: Vec<(String, serde_json::Value)>,
     #[serde(default)]
     pub claude_id: Option<String>,
+    /// Subagent cards, so they reappear as they were after /reload.
+    #[serde(default)]
+    pub agents: Vec<crate::session::AgentSnap>,
 }
 
 fn home() -> PathBuf {

@@ -12,7 +12,7 @@ pub enum Status {
     Working,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolState {
     Running,
     Ok,
@@ -205,17 +205,69 @@ fn task_number(result: &str) -> Option<String> {
     (!n.is_empty()).then_some(n)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AgentStatus {
     Running,
     Done,
     Failed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum AgentLine {
     Tool { id: String, name: String, input: Value, state: ToolState },
     Text(String),
+}
+
+/// An agent card carried across /reload (instants become ages in ms).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentSnap {
+    pub id: String,
+    pub kind: String,
+    pub desc: String,
+    pub activity: String,
+    pub log: Vec<AgentLine>,
+    pub status: AgentStatus,
+    pub age_ms: u64,
+    pub finished_ago_ms: Option<u64>,
+    pub tools: usize,
+    pub tokens: u64,
+    pub background: bool,
+}
+
+impl Agent {
+    pub fn snap(&self) -> AgentSnap {
+        AgentSnap {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            desc: self.desc.clone(),
+            activity: self.activity.clone(),
+            log: self.log.clone(),
+            status: self.status,
+            age_ms: self.started.elapsed().as_millis() as u64,
+            finished_ago_ms: self.finished.map(|f| f.elapsed().as_millis() as u64),
+            tools: self.tools,
+            tokens: self.tokens,
+            background: self.background,
+        }
+    }
+
+    pub fn from_snap(s: AgentSnap) -> Agent {
+        let now = Instant::now();
+        let ago = |ms: u64| now.checked_sub(Duration::from_millis(ms)).unwrap_or(now);
+        Agent {
+            id: s.id,
+            kind: s.kind,
+            desc: s.desc,
+            activity: s.activity,
+            log: s.log,
+            status: s.status,
+            started: ago(s.age_ms),
+            finished: s.finished_ago_ms.map(ago),
+            tools: s.tools,
+            tokens: s.tokens,
+            background: s.background,
+        }
+    }
 }
 
 /// A subagent launched by the Agent/Task tool, with its own activity log.
@@ -1528,6 +1580,17 @@ mod tests {
         s.ctx_used = 10;
         assert_eq!(s.context_alert(), None);
         assert_eq!(s.ctx_alerted, 0);
+    }
+
+    #[test]
+    fn agent_cards_survive_a_snapshot() {
+        let mut s = sess();
+        s.user_message("go");
+        tool(&mut s, "A1", "Agent", json!({"description":"Security review"}), "Async agent launched successfully.");
+        s.handle(&json!({"type":"assistant","parent_tool_use_id":"A1","message":{"id":"x","content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/p/a.ts"}}]}}));
+        let json = serde_json::to_string(&s.agents[0].snap()).unwrap();
+        let back = Agent::from_snap(serde_json::from_str(&json).unwrap());
+        assert_eq!((back.desc.as_str(), back.status, back.log.len(), back.background), ("Security review", AgentStatus::Running, 1, true));
     }
 
     #[test]
