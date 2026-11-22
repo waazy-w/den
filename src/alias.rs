@@ -144,7 +144,22 @@ fn rewrite(path: &Path, new: &str) -> std::io::Result<()> {
         std::fs::copy(path, &bak)?;
     }
     let tmp = path.with_extension("den-tmp");
-    std::fs::write(&tmp, new)?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&tmp)?;
+    // Keep the file's own permissions (a private rc file stays private).
+    if let Ok(m) = std::fs::metadata(path) {
+        f.set_permissions(m.permissions())?;
+    }
+    std::io::Write::write_all(&mut f, new.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
     std::fs::rename(&tmp, path)
 }
 
