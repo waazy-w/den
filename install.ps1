@@ -17,11 +17,11 @@ try {
     Write-Error "couldn't download $asset from the latest release of $repo. If a new version was just published, try again in a few minutes."
 }
 $exe = Join-Path $dest 'den.exe'
+# Clear out copies earlier updates moved aside (ones still running stay).
+Get-ChildItem -Path $dest -Filter 'den.old*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 if (Test-Path $exe) {
     # A running den.exe can't be overwritten, but it can be moved aside.
-    $old = Join-Path $dest 'den.old.exe'
-    Remove-Item -Force -ErrorAction SilentlyContinue $old
-    Move-Item -Force $exe $old
+    Move-Item -Force $exe (Join-Path $dest "den.old-$([DateTimeOffset]::Now.ToUnixTimeMilliseconds()).exe")
 }
 Move-Item -Force $tmp $exe
 Write-Host "installed $(& $exe --version) to $exe"

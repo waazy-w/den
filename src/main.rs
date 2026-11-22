@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
     ratatui::restore();
     if let Ok(true) = result {
         // On Linux a self-update leaves "/path/den (deleted)"; run the new file.
-        let exe = std::env::current_exe()?;
+        let exe = update::installed_exe()?;
         let exe = match exe.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
             Some(p) => PathBuf::from(p),
             None => exe,

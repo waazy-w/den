@@ -29,16 +29,40 @@ pub fn asset_name() -> String {
 
 /// Where a replaced den.exe goes: Windows can't overwrite a running program,
 /// but it can rename it out of the way.
+/// Each gets its own name, because an older one may still be running.
 fn retired(exe: &Path) -> PathBuf {
-    exe.with_file_name("den.old.exe")
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    exe.with_file_name(format!("den.old-{stamp}.exe"))
 }
 
-/// Deletes the den.exe a Windows update left behind once it's no longer running.
+fn is_retired(name: &str) -> bool {
+    name.starts_with("den.old") && name.ends_with(".exe")
+}
+
+/// The den that's installed: normally this program, but on Windows a den
+/// still running from a moved-aside copy means the den.exe beside it.
+pub fn installed_exe() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    if cfg!(windows) && exe.file_name().is_some_and(|n| is_retired(&n.to_string_lossy())) {
+        let real = exe.with_file_name("den.exe");
+        if real.is_file() {
+            return Ok(real);
+        }
+    }
+    Ok(exe)
+}
+
+/// Deletes moved-aside copies a Windows update left behind; any still
+/// running stay until next time.
 pub fn clean_retired() {
-    if cfg!(windows)
-        && let Ok(exe) = std::env::current_exe()
-    {
-        let _ = std::fs::remove_file(retired(&exe));
+    if !cfg!(windows) {
+        return;
+    }
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) else { return };
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if is_retired(&e.file_name().to_string_lossy()) {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
 }
 
@@ -203,7 +227,6 @@ fn install(src: &Source, tag: &str, asset: &str, exe: &Path) -> Result<(), Strin
         }
         if cfg!(windows) {
             let old = retired(exe);
-            let _ = std::fs::remove_file(&old);
             std::fs::rename(exe, &old).map_err(|e| format!("couldn't move {} aside: {e}", exe.display()))?;
             return std::fs::rename(&tmp, exe).map_err(|e| {
                 let _ = std::fs::rename(&old, exe);
@@ -233,7 +256,7 @@ pub fn run() -> Outcome {
     let Some(asset) = asset.filter(|a| !a.is_empty()) else {
         return Outcome::Failed(format!("{tag} has no build for {}", asset_name()));
     };
-    let exe = match std::env::current_exe().and_then(std::fs::canonicalize) {
+    let exe = match installed_exe().and_then(std::fs::canonicalize) {
         Ok(e) => e,
         Err(e) => return Outcome::Failed(e.to_string()),
     };
@@ -256,4 +279,14 @@ mod tests {
         assert!(!newer("garbage", "0.1.0"));
         assert!(asset_name().starts_with("den-"));
     }
+    #[test]
+    fn retired_names_are_unique_and_recognized() {
+        let exe = Path::new("den.exe");
+        let a = retired(exe);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_ne!(a, retired(exe));
+        assert!(is_retired(&a.file_name().unwrap().to_string_lossy()));
+        assert!(is_retired("den.old.exe") && !is_retired("den.exe"));
+    }
+
 }
