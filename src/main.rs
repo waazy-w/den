@@ -206,6 +206,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool
             // whatever was redrawn last (like the timer's digits).
             let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate, crossterm::cursor::Hide);
             terminal.draw(|f| ui::draw(f, &mut app))?;
+            if let Some(p) = ui::take_cursor() {
+                let _ = execute!(stdout(), crossterm::cursor::MoveTo(p.x, p.y), crossterm::cursor::Show);
+            }
             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
             last_draw = Instant::now();
             dirty = false;

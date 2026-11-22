@@ -248,7 +248,7 @@ pub fn search(f: &mut Frame, area: Rect, app: &App, query: &crate::input::Editor
     }
     hint(f, inner, "↑↓ pick   ⏎ jump there   esc close");
     let cx = width(&query.text[..query.cursor]);
-    f.set_cursor_position(Position::new(inner.x + 3 + cx as u16, inner.y));
+    crate::ui::place_cursor(Position::new(inner.x + 3 + cx as u16, inner.y));
 }
 
 pub fn theme(f: &mut Frame, area: Rect, sel: usize) {

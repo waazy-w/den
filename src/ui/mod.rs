@@ -23,7 +23,23 @@ use wrap::{width, wrap};
 const SIDEBAR_W: u16 = 28;
 const HEADER_H: u16 = 1;
 
+thread_local! {
+    static CURSOR: std::cell::Cell<Option<Position>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where the text cursor goes once the frame is on screen. ratatui would show
+/// it before moving it, which flashes it at whatever was drawn last.
+pub fn place_cursor(p: Position) {
+    CURSOR.with(|c| c.set(Some(p)));
+}
+
+/// The cursor position the last frame asked for.
+pub fn take_cursor() -> Option<Position> {
+    CURSOR.with(|c| c.take())
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
+    CURSOR.with(|c| c.set(None));
     draw_all(f, app);
     if cfg!(windows) {
         no_emoji(f.buffer_mut());
@@ -580,7 +596,7 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
         }
     }
     if focused {
-        f.set_cursor_position(Position::new(
+        crate::ui::place_cursor(Position::new(
             inner.x + 3 + cursor.1 as u16,
             inner.y + (cursor.0 - first_row) as u16,
         ));
@@ -1066,7 +1082,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 inner.width,
             );
             let cx = width(&query.text[..query.cursor]).min(inner.width as usize - 4);
-            f.set_cursor_position(Position::new(inner.x + 3 + cx as u16, inner.y));
+            crate::ui::place_cursor(Position::new(inner.x + 3 + cx as u16, inner.y));
         }
         Modal::Switcher { query, sel } => {
             let hits = switcher_hits(&app.sessions, &query.text);
@@ -1114,7 +1130,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 y += 1;
             }
             let cx = width(&query.text[..query.cursor]);
-            f.set_cursor_position(Position::new(inner.x + 3 + cx as u16, inner.y));
+            crate::ui::place_cursor(Position::new(inner.x + 3 + cx as u16, inner.y));
         }
         Modal::Stats => draw_stats(f, area, app),
         Modal::Agents => {
@@ -1508,7 +1524,7 @@ fn draw_board(f: &mut Frame, area: Rect, b: &crate::app::Board, app: &App) {
         let x = rect.x + 2;
         buf.set_line(x, foot, &line, rect.width.saturating_sub(4));
         let cx = x + width(prompt) as u16 + width(&e.text[..e.cursor]) as u16;
-        f.set_cursor_position(Position::new(cx, foot));
+        crate::ui::place_cursor(Position::new(cx, foot));
     } else {
         let keys: [(&str, &str); 7] =
             [("↑↓", "move"), ("←→", "switch"), ("⏎", "open"), ("n", "new project"), ("a", "add folder"), ("/", "filter"), ("esc", "close")];

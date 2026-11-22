@@ -37,7 +37,14 @@ pub fn active(since: Option<Instant>, dur: Duration) -> bool {
 // No ✳: Windows draws it as an emoji.
 const SPIN: [&str; 10] = ["·", "✢", "✱", "✶", "✻", "✽", "✻", "✶", "✱", "✢"];
 
+// Windows Terminal's font has no ✢✶✻✽; borrowed from another font they jump
+// in size and position, so Windows breathes a dot instead.
+const SPIN_WIN: [&str; 8] = ["·", "∙", "•", "●", "●", "•", "∙", "·"];
+
 pub fn spinner() -> &'static str {
+    if cfg!(windows) {
+        return SPIN_WIN[((secs() / 0.14) as usize) % SPIN_WIN.len()];
+    }
     SPIN[((secs() / 0.11) as usize) % SPIN.len()]
 }
 
