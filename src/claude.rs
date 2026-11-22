@@ -395,6 +395,12 @@ impl Proc {
         self.send(json!({"type": "control_request", "request_id": id, "request": {"subtype": "initialize"}}));
     }
 
+    /// A control request whose reply is recognized by its id prefix.
+    pub fn request(&self, prefix: &str, request: Value) {
+        let id = format!("{prefix}-{}", REQ.fetch_add(1, Ordering::Relaxed));
+        self.send(json!({"type": "control_request", "request_id": id, "request": request}));
+    }
+
     pub fn interrupt(&self) {
         self.control(json!({"subtype": "interrupt"}));
     }

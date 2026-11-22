@@ -217,6 +217,8 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("workspace", "add a folder of projects  add|remove|list <path>"),
     ("style", "how much Claude explains  default|Explanatory|Concise"),
     ("reload", "restart den, keep every session"),
+    ("restart", "restart Claude Code: reloads MCP servers, settings and plugins; keeps the chat"),
+    ("mcp", "MCP servers and their status  [reconnect <name>]"),
     ("update", "install the newest den release"),
     ("new", "new session  [path]"),
     ("close", "close this session"),
@@ -1361,6 +1363,22 @@ impl App {
         }
     }
 
+    /// Restarts this session's `claude` on the same conversation, so it
+    /// rereads MCP servers, settings, plugins and CLAUDE.md. Waits for a reply
+    /// in progress to finish.
+    fn restart_claude(&mut self) {
+        let i = self.active;
+        if self.sessions[i].busy() {
+            self.sessions[i].respawn = true;
+            self.sessions[i].note("restarting Claude Code after this reply", NoteKind::Info);
+            return;
+        }
+        self.kill(i);
+        if self.ensure_proc(i) {
+            self.sessions[i].note("Claude Code restarted · MCP servers, settings and plugins reloaded · conversation kept", NoteKind::Info);
+        }
+    }
+
     fn proc(&self, i: usize) -> Option<&Proc> {
         self.procs.get(&self.sessions[i].sid).map(|(_, p)| p)
     }
@@ -1503,6 +1521,21 @@ impl App {
         let (name, arg) = cmd.split_once(' ').map_or((cmd, ""), |(a, b)| (a, b.trim()));
         match name {
             "reload" => self.request_reload(),
+            "restart" => self.restart_claude(),
+            "mcp" => {
+                let i = self.active;
+                if !self.ensure_proc(i) {
+                    return true;
+                }
+                let Some(p) = self.proc(i) else { return true };
+                match arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim())) {
+                    ("reconnect", name) if !name.is_empty() => {
+                        p.request("den-mcp-reconnect", json!({"subtype": "mcp_reconnect", "serverName": name}));
+                        self.toast(format!("reconnecting {name}…"));
+                    }
+                    _ => p.request("den-mcp", json!({"subtype": "mcp_status"})),
+                }
+            }
             "update" => {
                 self.toast("checking for updates…");
                 self.check_update(true);

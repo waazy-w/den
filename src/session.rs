@@ -755,6 +755,16 @@ impl Session {
             "control_request" => return self.on_control(v),
             "control_response" => {
                 let r = &v["response"];
+                let rid = tools::s(r, "request_id");
+                if rid.starts_with("den-mcp") {
+                    let ok = tools::s(r, "subtype") != "error";
+                    let text = match (ok, rid.starts_with("den-mcp-reconnect")) {
+                        (true, false) => mcp_report(&r["response"]),
+                        (true, true) => "reconnected · /mcp shows the status".to_string(),
+                        (false, _) => format!("MCP: {}", tools::s(r, "error")),
+                    };
+                    self.note(text, if ok { NoteKind::Info } else { NoteKind::Error });
+                }
                 if tools::s(r, "request_id").starts_with("den-init") || tools::s(r, "request_id").starts_with("ctui-init") {
                     let cmds = parse_commands(&r["response"]);
                     if !cmds.is_empty() {
@@ -1445,6 +1455,39 @@ impl Session {
     }
 }
 
+/// "MCP servers" listing from Claude Code's mcp_status reply. Only names,
+/// status, scope and tool counts: a server's config can hold tokens.
+pub fn mcp_report(v: &Value) -> String {
+    let servers = v.get("mcpServers").and_then(Value::as_array).cloned().unwrap_or_default();
+    if servers.is_empty() {
+        return "no MCP servers configured · add one with `claude mcp add`, then /restart".into();
+    }
+    let mut lines = vec![format!("MCP servers ({})", servers.len())];
+    for sv in &servers {
+        let status = tools::s(sv, "status");
+        let mark = match status {
+            "connected" => "●",
+            "pending" => "◌",
+            "needs-auth" => "◐",
+            _ => "○",
+        };
+        let mut line = format!("  {mark} {}  {}", tools::s(sv, "name"), status.replace('-', " "));
+        if let Some(n) = sv.get("tools").and_then(Value::as_array).map(Vec::len).filter(|n| *n > 0) {
+            line.push_str(&format!(" · {n} tools"));
+        }
+        let scope = tools::s(sv, "scope");
+        if !scope.is_empty() && scope != "dynamic" {
+            line.push_str(&format!(" · {scope}"));
+        }
+        if let Some(e) = sv.get("error").and_then(Value::as_str) {
+            line.push_str(&format!(" · {}", e.lines().next().unwrap_or("")));
+        }
+        lines.push(line);
+    }
+    lines.push("/mcp reconnect <name> retries one · /restart reloads Claude Code after config changes".into());
+    lines.join("\n")
+}
+
 pub fn auto_name(text: &str) -> String {
     let mut out = String::new();
     for w in text.split_whitespace() {
@@ -1736,6 +1779,19 @@ mod tests {
         assert!(!a[0].background && a[1].background);
         assert!(a[0].started.elapsed().as_secs() > 60);
         assert_eq!(stamp_secs("1970-01-02T00:00:01Z"), Some(86_401));
+    }
+
+    #[test]
+    fn mcp_report_lists_servers_without_config() {
+        let v = json!({"mcpServers": [
+            {"name": "github", "status": "connected", "scope": "user", "tools": [{"name": "a"}, {"name": "b"}], "config": {"headers": {"Authorization": "Bearer SECRET"}}},
+            {"name": "plugin:x", "status": "needs-auth", "scope": "dynamic"}
+        ]});
+        let r = mcp_report(&v);
+        assert!(r.contains("● github  connected · 2 tools · user"));
+        assert!(r.contains("◐ plugin:x  needs auth"));
+        assert!(!r.contains("SECRET"));
+        assert!(mcp_report(&json!({})).contains("no MCP servers"));
     }
 
 }
