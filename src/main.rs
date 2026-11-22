@@ -201,7 +201,12 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool
     let mut last_draw = Instant::now() - FRAME;
     loop {
         if dirty && last_draw.elapsed() >= FRAME {
+            // Hide the cursor while cells change, and ask the terminal to show the
+            // frame at once; otherwise Windows Terminal flashes the cursor at
+            // whatever was redrawn last (like the timer's digits).
+            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate, crossterm::cursor::Hide);
             terminal.draw(|f| ui::draw(f, &mut app))?;
+            let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
             last_draw = Instant::now();
             dirty = false;
         }

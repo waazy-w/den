@@ -24,6 +24,24 @@ const SIDEBAR_W: u16 = 28;
 const HEADER_H: u16 = 1;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    draw_all(f, app);
+    if cfg!(windows) {
+        no_emoji(f.buffer_mut());
+    }
+}
+
+/// Symbols Windows Terminal draws as color emoji, and plain look-alikes.
+const EMOJI_PRONE: [(&str, &str); 6] = [("⚠", "▲"), ("☑", "▣"), ("☐", "□"), ("⏸", "‖"), ("✳", "✱"), ("✔", "✓")];
+
+fn no_emoji(buf: &mut ratatui::buffer::Buffer) {
+    for cell in buf.content.iter_mut() {
+        if let Some((_, plain)) = EMOJI_PRONE.iter().find(|(e, _)| cell.symbol() == *e) {
+            cell.set_symbol(plain);
+        }
+    }
+}
+
+fn draw_all(f: &mut Frame, app: &mut App) {
     let area = f.area();
     if theme::p().bg.is_some() {
         f.buffer_mut().set_style(area, Style::new().bg(theme::bg()).fg(theme::text()));

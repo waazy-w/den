@@ -34,7 +34,8 @@ pub fn active(since: Option<Instant>, dur: Duration) -> bool {
     since.is_some_and(|s| s.elapsed() < dur)
 }
 
-const SPIN: [&str; 10] = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+// No ✳: Windows draws it as an emoji.
+const SPIN: [&str; 10] = ["·", "✢", "✱", "✶", "✻", "✽", "✻", "✶", "✱", "✢"];
 
 pub fn spinner() -> &'static str {
     SPIN[((secs() / 0.11) as usize) % SPIN.len()]
