@@ -327,6 +327,38 @@ pub fn save(sessions: &[Saved]) {
     }
 }
 
+/// Claude Code's most recent conversation started in `cwd` (its session id),
+/// like `claude --continue` picks.
+pub fn latest_conversation(cwd: &Path) -> Option<String> {
+    latest_in(&home().join(".claude").join("projects"), cwd)
+}
+
+fn latest_in(projects: &Path, cwd: &Path) -> Option<String> {
+    let slug: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(projects.join(slug))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("agent-")))
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .collect();
+    files.sort_by_key(|a| std::cmp::Reverse(a.0));
+    // Different folders can share a slug; take the newest that really is this one
+    // and has an actual message in it.
+    files.into_iter().find_map(|(_, p)| {
+        let text = std::fs::read_to_string(&p).ok()?;
+        let mine = text.lines().take(50).any(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()
+                .and_then(|v| v.get("cwd").and_then(|c| c.as_str()).map(|c| Path::new(c) == cwd))
+                .unwrap_or(false)
+        });
+        let talked = text.contains("\"type\":\"assistant\"");
+        if mine && talked { Some(p.file_stem()?.to_string_lossy().into_owned()) } else { None }
+    })
+}
+
 /// Finds Claude Code's saved transcript for a session id.
 pub fn transcript(claude_id: &str) -> Option<String> {
     let projects = home().join(".claude").join("projects");
@@ -391,6 +423,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "[2]");
         assert_eq!(std::fs::read_to_string(dir.join("sessions.json.bak")).unwrap(), "[1]");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn latest_conversation_picks_newest_real_one_for_this_folder() {
+        let base = std::env::temp_dir().join(format!("den-latest-{}", std::process::id()));
+        let dir = base.join("-w-app");
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = |cwd: &str| format!("{{\"type\":\"user\",\"cwd\":\"{cwd}\"}}\n{{\"type\":\"assistant\",\"cwd\":\"{cwd}\"}}\n");
+        std::fs::write(dir.join("old.jsonl"), line("/w/app")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("new.jsonl"), line("/w/app")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("other.jsonl"), line("/w.app")).unwrap();
+        std::fs::write(dir.join("agent-x.jsonl"), line("/w/app")).unwrap();
+        assert_eq!(latest_in(&base, Path::new("/w/app")).as_deref(), Some("new"));
+        assert_eq!(latest_in(&base, Path::new("/nope")), None);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
 }

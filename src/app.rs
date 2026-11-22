@@ -363,7 +363,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
 
 
 impl App {
-    pub fn new(tx: UnboundedSender<AppEvent>, launch_dir: PathBuf, open_new: bool, reloaded: bool) -> Self {
+    pub fn new(tx: UnboundedSender<AppEvent>, launch_dir: PathBuf, open_new: bool, resume_last: bool, reloaded: bool) -> Self {
         let mut app = Self {
             sessions: Vec::new(),
             procs: HashMap::new(),
@@ -534,11 +534,14 @@ impl App {
         match existing {
             Some(i) if !open_new => app.active = i,
             _ if open_new || app.sessions.is_empty() => {
-                let s = app.make_session(launch_dir);
+                let s = app.make_session(launch_dir.clone());
                 app.sessions.push(s);
                 app.active = app.sessions.len() - 1;
             }
             _ => app.active = app.sessions.len() - 1,
+        }
+        if resume_last {
+            app.continue_last(&launch_dir);
         }
         if let Some(snap) = snapshot {
             app.active = snap.active.min(app.sessions.len().saturating_sub(1));
@@ -658,6 +661,44 @@ impl App {
         c.theme = Some(name.to_string());
         store::save_config(&c);
         self.toast(format!("theme: {name}"));
+    }
+
+    /// `den continue`: switch to this folder's most recent Claude Code
+    /// conversation, opening it as a session if den doesn't have it yet.
+    fn continue_last(&mut self, dir: &Path) {
+        let Some(id) = store::latest_conversation(dir) else {
+            self.current_mut().note("no earlier conversation in this folder, so this is a fresh one", NoteKind::Info);
+            return;
+        };
+        if let Some(i) = self.sessions.iter().position(|s| s.claude_id.as_deref() == Some(id.as_str())) {
+            self.active = i;
+            return;
+        }
+        let mut s = self.make_session(dir.to_path_buf());
+        if let Some(h) = store::transcript(&id) {
+            s.load_history_opts(&h, false);
+        }
+        s.claude_id = Some(id);
+        if let Some(t) = s.entries.iter().find_map(|e| match &e.item {
+            Item::User(t) => Some(t.clone()),
+            _ => None,
+        }) {
+            s.name = crate::session::auto_name(&t);
+            s.auto_named = true;
+        }
+        s.ctx_shown = s.ctx_pct();
+        // Replace the empty session that was opened for this folder, if any.
+        match self.sessions.iter().position(|x| x.cwd == dir && x.entries.is_empty() && x.claude_id.is_none()) {
+            Some(i) => {
+                self.sessions[i] = s;
+                self.active = i;
+            }
+            None => {
+                self.sessions.push(s);
+                self.active = self.sessions.len() - 1;
+            }
+        }
+        self.persist();
     }
 
     fn make_session(&mut self, cwd: PathBuf) -> Session {

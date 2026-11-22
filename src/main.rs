@@ -32,6 +32,8 @@ const FRAME: Duration = Duration::from_millis(16);
 struct Opts {
     dir: PathBuf,
     open_new: bool,
+    /// `den continue`: open this folder's most recent Claude Code conversation.
+    resume_last: bool,
     mouse: bool,
     reloaded: bool,
 }
@@ -40,13 +42,16 @@ fn parse_args() -> Result<Opts> {
     let mut dir = None;
     let mut mouse = true;
     let mut reloaded = false;
+    let mut resume_last = false;
     for a in std::env::args().skip(1) {
         match a.as_str() {
             "-h" | "--help" => {
                 println!(
                     "den — a clean terminal UI for Claude Code\n\n\
-                     usage: den [dir] [--no-mouse]\n\n\
+                     usage: den [dir] [--no-mouse]\n\
+                            den continue [dir]\n\n\
                      Opens your saved sessions; with [dir], also starts a new session there.\n\
+                     den continue  pick up the most recent conversation in this folder (-c)\n\
                      --no-mouse  keep native terminal text selection (disables wheel scroll)\n\
                      den update  install the newest release now\n\n\
                      env: DEN_CLAUDE_BIN  path to the claude binary (default: claude)"
@@ -74,6 +79,7 @@ fn parse_args() -> Result<Opts> {
                 std::thread::sleep(Duration::from_secs(4));
                 std::process::exit(0);
             }
+            "continue" | "-c" | "--continue" if !std::path::Path::new(&a).is_dir() => resume_last = true,
             "--no-mouse" => mouse = false,
             "--reloaded" => reloaded = true,
             other => dir = Some(PathBuf::from(other)),
@@ -84,7 +90,7 @@ fn parse_args() -> Result<Opts> {
         Some(d) => std::fs::canonicalize(&d).map_err(|e| anyhow::anyhow!("{}: {e}", d.display()))?,
         None => std::env::current_dir()?,
     };
-    Ok(Opts { dir, open_new: open_new && !reloaded, mouse, reloaded })
+    Ok(Opts { dir, open_new: open_new && !reloaded && !resume_last, resume_last: resume_last && !reloaded, mouse, reloaded })
 }
 
 fn restore_extras(mouse: bool) {
@@ -186,7 +192,7 @@ async fn main() -> Result<()> {
 /// Runs the UI; returns Ok(true) when the user asked to `/reload`.
 async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut app = app::App::new(tx, opts.dir, opts.open_new, opts.reloaded);
+    let mut app = app::App::new(tx, opts.dir, opts.open_new, opts.resume_last, opts.reloaded);
     let mut events = EventStream::new();
     // Closing the terminal window or `kill` still saves everything on the way out.
     #[cfg(unix)]
