@@ -218,7 +218,8 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("style", "how much Claude explains  default|Explanatory|Concise"),
     ("reload", "restart den, keep every session"),
     ("restart", "restart Claude Code: reloads MCP servers, settings and plugins; keeps the chat"),
-    ("mcp", "MCP servers and their status  [reconnect <name>]"),
+    ("mcp", "manage MCP servers in Claude Code's menu  [list | reconnect <name>]"),
+    ("claude", "open Claude Code's own screen on this chat  [/command]"),
     ("update", "install the newest den release"),
     ("new", "new session  [path]"),
     ("close", "close this session"),
@@ -233,7 +234,7 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("compact", "compact, keeping pins, tasks and changed files  [focus]"),
     ("doctor", "check Claude Code, login and updates"),
     ("theme", "pick a color theme  [name]"),
-    ("plugin", "install and manage Claude Code plugins  list|install|marketplace add …"),
+    ("plugin", "browse and manage plugins in Claude Code's menu  [list|install|marketplace add …]"),
     ("split", "two sessions side by side  [off]"),
     ("search", "search every conversation"),
     ("mode", "permission mode  default|acceptEdits|plan|auto"),
@@ -245,7 +246,44 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("quit", "exit den"),
 ];
 
+/// Claude Code's own full-screen UI for one command (/mcp, /plugin, /hooks …),
+/// run in den's terminal on the session's conversation. main.rs runs it.
+pub struct Screen {
+    pub cmd: std::process::Command,
+    pub label: String,
+    pub sid: usize,
+    pub then: AfterScreen,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AfterScreen {
+    Nothing,
+    McpStatus,
+}
+
+/// Claude Code commands that only work in its own screen, not in den's
+/// headless connection. Anything else that answers "isn't available in this
+/// environment" is sent there too.
+const SCREEN_COMMANDS: &[&str] = &[
+    "hooks",
+    "permissions",
+    "allowed-tools",
+    "memory",
+    "login",
+    "logout",
+    "status",
+    "export",
+    "add-dir",
+    "ide",
+    "terminal-setup",
+    "install-github-app",
+    "privacy-settings",
+    "vim",
+    "keybindings",
+];
+
 pub struct App {
+    pub handoff: Option<Screen>,
     pub sessions: Vec<Session>,
     procs: HashMap<usize, (u64, Proc)>,
     pub active: usize,
@@ -402,6 +440,7 @@ impl App {
             last_tick: Instant::now(),
             last_activity: Instant::now(),
             reload_pending: false,
+            handoff: None,
             workspaces: {
                 let c = store::load_config();
                 if let Some(t) = &c.theme {
@@ -534,7 +573,7 @@ impl App {
         }
         let existing = app.sessions.iter().position(|s| s.cwd == launch_dir && s.entries.is_empty());
         match existing {
-            Some(i) if !open_new => app.active = i,
+            Some(i) => app.active = i,
             _ if open_new || app.sessions.is_empty() => {
                 let s = app.make_session(launch_dir.clone());
                 app.sessions.push(s);
@@ -967,6 +1006,13 @@ impl App {
                     store::save_lifetime(&self.lifetime);
                     self.persist();
                 }
+                if had_id != self.sessions[i].claude_id {
+                    self.persist();
+                }
+                if let Some(c) = self.sessions[i].needs_screen.take() {
+                    self.open_screen(i, &c, AfterScreen::Nothing);
+                    return;
+                }
                 if !self.sessions[i].busy()
                     && let Some((text, content)) = self.sessions[i].queue.pop_front()
                 {
@@ -1379,6 +1425,59 @@ impl App {
         }
     }
 
+    /// Hands the terminal to Claude Code's own screen for `command` (empty:
+    /// just its prompt), on this session's conversation. den's connection for
+    /// the session is closed meanwhile and restarted afterwards, so whatever
+    /// changed there (MCP servers, plugins, settings, login) takes effect.
+    fn open_screen(&mut self, i: usize, command: &str, then: AfterScreen) {
+        let label = if command.is_empty() { "Claude Code".to_string() } else { command.to_string() };
+        if self.sessions[i].busy() {
+            self.sessions[i].note(format!("Claude is replying · run {label} again when it's done (Esc stops it)"), NoteKind::Info);
+            return;
+        }
+        let s = &self.sessions[i];
+        let mut cmd = std::process::Command::new(claude::claude_bin());
+        if let Some(id) = &s.claude_id {
+            cmd.args(["--resume", id]);
+        }
+        if let Some(m) = &s.model {
+            cmd.args(["--model", m]);
+        }
+        if let Some(e) = &s.effort {
+            cmd.args(["--effort", e]);
+        }
+        if s.mode != "default" && !s.mode.is_empty() {
+            cmd.args(["--permission-mode", &s.mode]);
+        }
+        if !command.is_empty() {
+            cmd.arg(command);
+        }
+        cmd.current_dir(&s.cwd).env("DEN_NO_ALIAS", "1");
+        let sid = s.sid;
+        self.kill(i);
+        self.handoff = Some(Screen { cmd, label, sid, then });
+    }
+
+    /// Back from Claude Code's screen.
+    pub fn handoff_done(&mut self, sid: usize, then: AfterScreen, status: std::io::Result<std::process::ExitStatus>) {
+        let Some(i) = self.idx_of(sid) else { return };
+        if let Err(e) = status {
+            self.sessions[i].note(format!("couldn't open Claude Code: {e}"), NoteKind::Error);
+        }
+        if !self.ensure_proc(i) {
+            return;
+        }
+        self.sessions[i].note("back in den · Claude Code restarted, so changes there are live", NoteKind::Info);
+        if then == AfterScreen::McpStatus
+            && let Some(p) = self.proc(i)
+        {
+            p.request("den-mcp", json!({"subtype": "mcp_status"}));
+        }
+        if let Some((text, content)) = self.sessions[i].queue.pop_front() {
+            self.send_now(i, &text, content);
+        }
+    }
+
     fn proc(&self, i: usize) -> Option<&Proc> {
         self.procs.get(&self.sessions[i].sid).map(|(_, p)| p)
     }
@@ -1522,6 +1621,20 @@ impl App {
         match name {
             "reload" => self.request_reload(),
             "restart" => self.restart_claude(),
+            "mcp" if arg.is_empty() || arg == "manage" => {
+                let i = self.active;
+                self.open_screen(i, "/mcp", AfterScreen::McpStatus);
+            }
+            "claude" => {
+                let i = self.active;
+                let c = if arg.is_empty() || arg.starts_with('/') { arg.to_string() } else { format!("/{arg}") };
+                self.open_screen(i, &c, AfterScreen::Nothing);
+            }
+            c if SCREEN_COMMANDS.contains(&c) => {
+                let i = self.active;
+                let full = if arg.is_empty() { format!("/{c}") } else { format!("/{c} {arg}") };
+                self.open_screen(i, &full, AfterScreen::Nothing);
+            }
             "mcp" => {
                 let i = self.active;
                 if !self.ensure_proc(i) {
@@ -1628,10 +1741,13 @@ impl App {
                 self.set_effort(e);
             }
             "files" | "diff" => self.open_files(),
+            "plugin" | "plugins" if arg.is_empty() || arg == "manage" || arg == "browse" => {
+                let i = self.active;
+                self.open_screen(i, "/plugin", AfterScreen::Nothing);
+            }
             "plugin" | "plugins" => {
-                // Claude Code's /plugin menu only works in its own screen; its
-                // command-line twin does the same job.
-                let args = if arg.is_empty() { "list" } else { arg };
+                // The command-line twin of the /plugin menu, shown inline.
+                let args = arg;
                 let i = self.active;
                 let changes = ["install", "i ", "uninstall", "remove", "enable", "disable", "update", "marketplace add"]
                     .iter()

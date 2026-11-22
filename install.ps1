@@ -35,4 +35,4 @@ if (-not (($userPath -split ';') -contains $dest)) {
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
     Write-Host "note: den drives Claude Code. Install it first: https://docs.claude.com/en/docs/claude-code"
 }
-Write-Host "run: den"
+Write-Host "run: den        (den alias makes typing claude open den too)"

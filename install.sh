@@ -45,4 +45,4 @@ esac
 if ! command -v claude >/dev/null 2>&1; then
   echo "note: den drives Claude Code. Install it first: https://docs.claude.com/en/docs/claude-code"
 fi
-echo "run: den"
+echo "run: den        (den alias makes typing claude open den too)"

@@ -1,3 +1,4 @@
+mod alias;
 mod anim;
 mod app;
 mod claude;
@@ -49,11 +50,13 @@ fn parse_args() -> Result<Opts> {
                 println!(
                     "den — a clean terminal UI for Claude Code\n\n\
                      usage: den [dir] [--no-mouse]\n\
-                            den continue [dir]\n\n\
+                            den continue [dir]\n\
+                            den alias [remove]\n\n\
                      Opens your saved sessions; with [dir], also starts a new session there.\n\
                      den continue  pick up the most recent conversation in this folder (-c)\n\
                      --no-mouse  keep native terminal text selection (disables wheel scroll)\n\
-                     den update  install the newest release now\n\n\
+                     den update  install the newest release now\n\
+                     den alias   make `claude` and `claude -c` in your terminal open den\n\n\
                      env: DEN_CLAUDE_BIN  path to the claude binary (default: claude)"
                 );
                 std::process::exit(0);
@@ -101,6 +104,41 @@ fn restore_extras(mouse: bool) {
     }
 }
 
+fn enable_extras(mouse: bool) {
+    let mut out = stdout();
+    let _ = execute!(out, EnableBracketedPaste, EnableFocusChange);
+    if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
+        let _ = execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
+    }
+    if mouse {
+        let _ = execute!(out, EnableMouseCapture);
+    }
+}
+
+/// Gives the terminal to Claude Code's own screen (a menu like /mcp or
+/// /plugin), then takes it back. den's key reader is stopped meanwhile so
+/// every keystroke reaches Claude Code.
+async fn hand_over(terminal: &mut ratatui::DefaultTerminal, h: app::Screen, mouse: bool) -> std::io::Result<std::process::ExitStatus> {
+    restore_extras(mouse);
+    ratatui::restore();
+    println!(
+        "\n  den › opening {} in Claude Code\n  \x1b[2mEsc closes the menu · /exit (or Ctrl+C twice) comes back to den\x1b[0m\n",
+        h.label
+    );
+    // Ctrl+C belongs to Claude Code now; without this den would be killed by it.
+    #[cfg(unix)]
+    let _sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+    #[cfg(windows)]
+    let _sigint = tokio::signal::windows::ctrl_c();
+    let mut cmd = h.cmd;
+    let status = tokio::task::spawn_blocking(move || cmd.status()).await.unwrap_or_else(|e| Err(std::io::Error::other(e)));
+    let _ = crossterm::terminal::enable_raw_mode();
+    let _ = execute!(stdout(), crossterm::terminal::EnterAlternateScreen);
+    enable_extras(mouse);
+    let _ = terminal.clear();
+    status
+}
+
 /// Installs from before the rename run as `ctui`; add a `den` beside it.
 #[cfg(not(unix))]
 fn link_new_name() {}
@@ -123,6 +161,7 @@ async fn main() -> Result<()> {
     match argv.get(1).map(String::as_str) {
         Some("hook") => std::process::exit(squeeze::hook()),
         Some("x") => std::process::exit(squeeze::run(&argv[2..])),
+        Some("alias") if !std::path::Path::new("alias").is_dir() => std::process::exit(alias::run(&argv[2..])),
         _ => {}
     }
     store::migrate_legacy();
@@ -144,19 +183,7 @@ async fn main() -> Result<()> {
         restore_extras(mouse);
         hook(info);
     }));
-    {
-        let mut out = stdout();
-        let _ = execute!(out, EnableBracketedPaste, EnableFocusChange);
-        if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
-            let _ = execute!(
-                out,
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            );
-        }
-        if mouse {
-            let _ = execute!(out, EnableMouseCapture);
-        }
-    }
+    enable_extras(mouse);
 
     let result = run(&mut terminal, opts).await;
     restore_extras(mouse);
@@ -192,6 +219,7 @@ async fn main() -> Result<()> {
 /// Runs the UI; returns Ok(true) when the user asked to `/reload`.
 async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool> {
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let mouse = opts.mouse;
     let mut app = app::App::new(tx, opts.dir, opts.open_new, opts.resume_last, opts.reloaded);
     let mut events = EventStream::new();
     // Closing the terminal window or `kill` still saves everything on the way out.
@@ -245,6 +273,14 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, opts: Opts) -> Result<bool
         }
         if app.quit {
             break;
+        }
+        if let Some(h) = app.handoff.take() {
+            let (sid, then) = (h.sid, h.then);
+            drop(events);
+            let status = hand_over(terminal, h, mouse).await;
+            events = EventStream::new();
+            app.handoff_done(sid, then, status);
+            dirty = true;
         }
         if app.reload_ready() && app.write_snapshot(&mut rx).await {
             return Ok(true);

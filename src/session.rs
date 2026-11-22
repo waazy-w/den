@@ -163,6 +163,12 @@ pub fn dur_words(secs: u64) -> String {
 
 /// Did this reply say the usage limit was hit? Returns the reset time when
 /// the message carries one ("…usage limit reached|1736000000"), else 0.
+/// "/hooks isn't available in this environment." → "/hooks" (with its arguments).
+pub fn screen_only(result: &str) -> Option<String> {
+    let cmd = result.strip_suffix(" isn't available in this environment.")?;
+    (cmd.starts_with('/') && !cmd.contains('\n') && cmd.len() < 200).then(|| cmd.to_string())
+}
+
 pub fn limit_reset(text: &str) -> Option<u64> {
     let low = text.to_lowercase();
     let hit = low.contains("usage limit reached") || low.contains("hit your limit") || low.contains("you've reached your limit");
@@ -470,6 +476,9 @@ pub struct Session {
     pub effort: Option<String>,
     /// Restart the process once the turn ends (an effort/style change).
     pub respawn: bool,
+    /// A command Claude Code can only show in its own screen ("/hooks isn't
+    /// available in this environment"); den opens it there.
+    pub needs_screen: Option<String>,
     /// A test command just passed (Clawd celebrates).
     pub tests_passed: bool,
     pub finished_at: Option<Instant>,
@@ -544,6 +553,7 @@ impl Session {
             changes: Vec::new(),
             effort: None,
             respawn: false,
+            needs_screen: None,
             tests_passed: false,
             finished_at: None,
             jump: None,
@@ -1134,7 +1144,14 @@ impl Session {
             .take_while(|e| !matches!(e.item, Item::User(_) | Item::Note(_, NoteKind::Command)))
             .any(|e| matches!(e.item, Item::Assistant(_)));
         let result_text = tools::s(v, "result").trim();
-        if !is_err && !answered && !result_text.is_empty() {
+        if !self.replaying
+            && let Some(cmd) = screen_only(result_text)
+        {
+            if let Some(pos) = self.entries.iter().rposition(|e| matches!(&e.item, Item::Assistant(t) if t.trim() == result_text)) {
+                self.entries.remove(pos);
+            }
+            self.needs_screen = Some(cmd);
+        } else if !is_err && !answered && !result_text.is_empty() {
             self.push(Item::Assistant(result_text.to_string()));
         }
         if is_err || (subtype != "success" && !subtype.is_empty()) {
@@ -1484,7 +1501,7 @@ pub fn mcp_report(v: &Value) -> String {
         }
         lines.push(line);
     }
-    lines.push("/mcp reconnect <name> retries one · /restart reloads Claude Code after config changes".into());
+    lines.push("/mcp opens the menu (sign in, enable, add) · /mcp reconnect <name> retries one · /mcp list shows this".into());
     lines.join("\n")
 }
 
@@ -1779,6 +1796,14 @@ mod tests {
         assert!(!a[0].background && a[1].background);
         assert!(a[0].started.elapsed().as_secs() > 60);
         assert_eq!(stamp_secs("1970-01-02T00:00:01Z"), Some(86_401));
+    }
+
+    #[test]
+    fn spots_commands_that_need_claude_codes_screen() {
+        assert_eq!(super::screen_only("/hooks isn't available in this environment."), Some("/hooks".into()));
+        assert_eq!(super::screen_only("/add-dir ../x isn't available in this environment."), Some("/add-dir ../x".into()));
+        assert_eq!(super::screen_only("Sure, hooks isn't available in this environment."), None);
+        assert_eq!(super::screen_only("Done."), None);
     }
 
     #[test]

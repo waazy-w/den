@@ -20,7 +20,14 @@ You need [Claude Code](https://docs.claude.com/en/docs/claude-code) installed an
 curl -fsSL https://raw.githubusercontent.com/waazy-w/den/main/install.sh | sh
 den            # restore saved sessions (or start one here)
 den ~/code/api # also open a new session in that directory
+den continue   # pick up this folder's most recent Claude Code conversation (-c)
+den alias      # make `claude` and `claude -c` in your terminal open den
 ```
+
+After `den alias` (and a new terminal), `claude` opens den in the current folder and `claude -c` /
+`claude --continue` runs `den continue`; any other use (`claude -p …`, `claude mcp add …`, scripts)
+still runs Claude Code itself. `command claude` skips den once, `den alias remove` undoes it. It
+works in zsh, bash, fish and PowerShell.
 
 On Windows, in PowerShell (Windows Terminal recommended):
 
@@ -68,6 +75,13 @@ collapses repeats and cuts huge logs to the start, the end and every error line 
 `~/.cache/den/out/`). Commands your rules don't cover are left alone, so you never get extra
 permission prompts. `/stats` shows the savings; toggle it in settings. If you use RTK, den leaves
 that job to RTK.
+
+**Claude Code's own menus.** Commands that only work in Claude Code's full-screen UI, like `/mcp`
+(sign in to servers, enable, add), `/plugin` (browse and install), `/hooks`, `/permissions`,
+`/memory`, `/login` or `/export`, open it right in den's terminal on the same conversation; `/exit`
+brings you back, and den restarts Claude Code so the changes are live. `/claude [/command]` opens
+any of them. `/mcp list` and `/plugin list` answer inline instead; `/restart` reloads Claude Code
+after you edit config by hand.
 
 Long pastes collapse to `[Pasted text #1 +40 lines]` and images (drag a file in, or `^V` with a
 screenshot on the clipboard) become `[Image #1]`; the full content is still sent. Messages typed
