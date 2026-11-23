@@ -88,7 +88,8 @@ after you edit config by hand.
 
 Long pastes collapse to `[Pasted text #1 +40 lines]` and images (drag a file in, or `^V` with a
 screenshot on the clipboard) become `[Image #1]`; the full content is still sent. Messages typed
-while Claude works are queued and sent when the turn ends.
+while Claude works go to it right away, and it reads them at its next step (as in Claude Code);
+only `/commands` wait for the turn to end.
 
 ## Keys
 

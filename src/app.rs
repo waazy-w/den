@@ -1557,11 +1557,18 @@ impl App {
                 return;
             }
         };
-        if self.sessions[i].busy() {
+        // While Claude works, a message goes to it right away and it reads it at
+        // its next step, like typing into Claude Code itself. Only Claude Code
+        // commands (/review …) wait for the turn to end.
+        if self.sessions[i].busy() && (text.starts_with('/') || !self.sessions[i].queue.is_empty()) {
             self.sessions[i].queue.push_back((text.to_string(), content));
             return;
         }
+        let busy = self.sessions[i].busy();
         self.send_now(i, text, content);
+        if busy {
+            self.toast("sent · Claude reads it at its next step");
+        }
     }
 
     /// `/btw`: asks a one-off copy of this conversation a side question. It has

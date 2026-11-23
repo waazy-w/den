@@ -582,7 +582,7 @@ fn draw_main(f: &mut Frame, area: Rect, app: &mut App, idx: usize) {
         } else if !s.permissions.is_empty() {
             "answer the request above"
         } else if s.busy() {
-            "queue a follow-up…"
+            "message Claude · it reads this at its next step"
         } else if s.entries.is_empty() {
             "ask anything · @ to mention files · / for commands"
         } else {
