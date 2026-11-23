@@ -376,13 +376,6 @@ fn body_wrapped(text: &str, st: Style, w: usize, out: &mut Vec<Line<'static>>, l
 fn tool_body(t: &Tool, w: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let text_st = theme::s(theme::dim());
-    if t.name == "Btw" {
-        if let Some(r) = &t.result {
-            let st = if t.state == ToolState::Err { theme::s(theme::err()) } else { theme::s(theme::text()) };
-            body_wrapped(r, st, w, &mut out, 1000);
-        }
-        return out;
-    }
     match t.name.as_str() {
         "Edit" | "MultiEdit" | "Write" => {
             let pairs = tools::edit_pairs(&t.name, &t.input);

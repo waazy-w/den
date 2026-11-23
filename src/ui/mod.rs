@@ -1151,6 +1151,32 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
         Modal::Theme { sel, .. } => panels::theme(f, area, *sel),
         Modal::Settings { sel } => panels::settings(f, area, app, *sel),
         Modal::Doctor { checks } => panels::doctor(f, area, checks),
+        Modal::Btw { question, answer, scroll, at, .. } => {
+            let w = area.width.saturating_sub(8).clamp(20, 88);
+            let tw = w.saturating_sub(4) as usize;
+            let q = Span::styled(question.clone(), theme::bold(theme::text()));
+            let mut lines = wrap(&[q], tw, &[Span::styled("› ", theme::bold(theme::accent()))], &[Span::raw("  ")]);
+            lines.push(Line::raw(""));
+            match answer {
+                None => lines.push(Line::from(vec![
+                    Span::styled(format!("{} ", anim::spinner()), theme::s(theme::accent())),
+                    Span::styled(format!("thinking… {}", fmt_dur(at.elapsed().as_secs_f32())), theme::s(theme::dim())),
+                ])),
+                Some(Ok(text)) => lines.extend(markdown::render_opts(text, tw, 0, false)),
+                Some(Err(e)) => lines.extend(wrap(&[Span::styled(e.clone(), theme::s(theme::err()))], tw, &[], &[])),
+            }
+            let max_h = area.height.saturating_sub(4).max(6);
+            let h = (lines.len() as u16 + 4).min(max_h);
+            let rect = centered(area, w, h);
+            f.render_widget(Clear, rect);
+            let b = modal_block("btw").title_bottom(
+                Line::from(Span::styled(" not added to the chat · esc close · ↑↓ scroll ", theme::s(theme::faint()))).right_aligned(),
+            );
+            let inner = b.inner(rect).inner(ratatui::layout::Margin::new(1, 1));
+            f.render_widget(b, rect);
+            let top = (*scroll).min((lines.len() as u16).saturating_sub(inner.height));
+            f.render_widget(Paragraph::new(lines).scroll((top, 0)), inner);
+        }
         Modal::Files { sel, scroll } => panels::files(f, area, app, *sel, *scroll),
         Modal::Search { query, sel } => panels::search(f, area, app, query, *sel),
         Modal::Help => {

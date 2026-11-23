@@ -66,7 +66,7 @@ the `^N` picker; type a new name there to create the folder and start a session 
 The bottom rows show context, tokens, time worked and cost, plus your plan usage windows
 (5-hour and weekly) with time until reset.
 
-`/btw <question>` asks a quick side question, even while Claude is working: it answers from the
+`/btw <question>` asks a quick side question in a popup, even while Claude is working: it answers from the
 conversation so far without tools, and neither interrupts Claude nor joins the chat.
 
 Start a line with `!` to run it in your shell (in the session's folder): the output shows in the

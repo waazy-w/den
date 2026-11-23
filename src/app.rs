@@ -34,6 +34,8 @@ pub enum Modal {
     Doctor { checks: Vec<Check> },
     Files { sel: usize, scroll: u16 },
     Search { query: Editor, sel: usize },
+    /// A `/btw` side question; `answer` is None while Claude thinks.
+    Btw { req: u64, question: String, answer: Option<Result<String, String>>, scroll: u16, at: Instant },
 }
 
 /// One line of `/doctor`: ok = Some(true) pass, Some(false) problem, None info.
@@ -791,7 +793,7 @@ impl App {
             return Some(Duration::from_millis(33));
         }
         // Background subagents keep their timers ticking.
-        if matches!(self.modal, Some(Modal::Tutorial { .. })) {
+        if matches!(self.modal, Some(Modal::Tutorial { .. } | Modal::Btw { answer: None, .. })) {
             return Some(Duration::from_millis(33));
         }
         // Waiting out a usage limit: tick once a second for the countdown and the resume.
@@ -1042,9 +1044,11 @@ impl App {
                 s.status = crate::session::Status::Idle;
             }
             AppEvent::Projects(list) => self.recent_projects = list,
-            AppEvent::Btw(sid, idx, answer) => {
-                if let Some(i) = self.idx_of(sid) {
-                    self.sessions[i].finish_btw(idx, answer);
+            AppEvent::Btw(id, result) => {
+                if let Some(Modal::Btw { req, answer, .. }) = &mut self.modal
+                    && *req == id
+                {
+                    *answer = Some(result);
                 }
             }
             AppEvent::Shell(sid, idx, text, code) => {
@@ -1564,8 +1568,10 @@ impl App {
     /// no tools, isn't saved, and never touches the session itself, so it works
     /// while Claude is mid-reply and leaves no trace in the chat Claude sees.
     fn btw(&mut self, i: usize, question: &str) {
-        let s = &mut self.sessions[i];
-        let idx = s.start_btw(question);
+        self.next_gen += 1;
+        let req = self.next_gen;
+        self.open_modal(Modal::Btw { req, question: question.to_string(), answer: None, scroll: 0, at: Instant::now() });
+        let s = &self.sessions[i];
         let mut cmd = tokio::process::Command::new(claude::claude_bin());
         cmd.args(["-p", "--output-format", "json", "--no-session-persistence", "--max-turns", "1", "--tools", ""]);
         cmd.args([
@@ -1584,7 +1590,7 @@ impl App {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let (sid, q, tx) = (s.sid, question.to_string(), self.tx.clone());
+        let (q, tx) = (question.to_string(), self.tx.clone());
         tokio::spawn(async move {
             let answer = async {
                 let mut child = cmd.spawn().map_err(|e| format!("couldn't start claude: {e}"))?;
@@ -1604,7 +1610,7 @@ impl App {
                 Ok(text)
             }
             .await;
-            let _ = tx.send(AppEvent::Btw(sid, idx, answer));
+            let _ = tx.send(AppEvent::Btw(req, answer));
         });
     }
 
@@ -3022,6 +3028,18 @@ impl App {
         if matches!(self.modal, Some(Modal::Board(_))) {
             return self.board_key(k);
         }
+        if let Some(Modal::Btw { scroll, .. }) = &mut self.modal {
+            match k.code {
+                KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Down => *scroll = scroll.saturating_add(1),
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => self.modal = None,
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') => self.modal = None,
+                _ => {}
+            }
+            return;
+        }
         if matches!(
             self.modal,
             Some(
@@ -3049,7 +3067,8 @@ impl App {
             | Modal::Search { .. }
             | Modal::Theme { .. }
             | Modal::Settings { .. }
-            | Modal::Doctor { .. } => {}
+            | Modal::Doctor { .. }
+            | Modal::Btw { .. } => {}
             Modal::Help | Modal::Stats | Modal::Agents | Modal::Tutorial { .. } => {
                 self.modal = None;
                 if matches!(k.code, KeyCode::Char(_)) && !ctrl {

@@ -48,7 +48,6 @@ pub fn summary(name: &str, input: &Value, cwd: &Path) -> (String, String) {
         "WebFetch" => ("fetch".into(), s(input, "url").into()),
         "WebSearch" => ("search".into(), s(input, "query").into()),
         "Task" | "Agent" => ("agent".into(), s(input, "description").into()),
-        "Btw" => ("btw".into(), first_line(s(input, "question"))),
         "TodoWrite" => {
             let n = input.get("todos").and_then(Value::as_array).map_or(0, Vec::len);
             ("todos".into(), format!("{n} items"))
