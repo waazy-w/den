@@ -24,6 +24,8 @@ pub enum AppEvent {
     Shell(usize, usize, String, i32),
     /// Results of the setup check; `bool` = it ran by itself at startup.
     Doctor(Vec<crate::app::Check>, bool),
+    /// A `/btw` answer: session, entry, answer or error.
+    Btw(usize, usize, Result<String, String>),
 }
 
 /// A running `claude` process and the tasks pumping its pipes.

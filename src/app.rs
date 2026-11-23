@@ -218,6 +218,7 @@ pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("style", "how much Claude explains  default|Explanatory|Concise"),
     ("reload", "restart den, keep every session"),
     ("restart", "restart Claude Code: reloads MCP servers, settings and plugins; keeps the chat"),
+    ("btw", "quick side question; doesn't interrupt Claude or join the chat  <question>"),
     ("mcp", "manage MCP servers in Claude Code's menu  [list | reconnect <name>]"),
     ("claude", "open Claude Code's own screen on this chat  [/command]"),
     ("update", "install the newest den release"),
@@ -1041,6 +1042,11 @@ impl App {
                 s.status = crate::session::Status::Idle;
             }
             AppEvent::Projects(list) => self.recent_projects = list,
+            AppEvent::Btw(sid, idx, answer) => {
+                if let Some(i) = self.idx_of(sid) {
+                    self.sessions[i].finish_btw(idx, answer);
+                }
+            }
             AppEvent::Shell(sid, idx, text, code) => {
                 if let Some(i) = self.idx_of(sid) {
                     self.sessions[i].finish_shell(idx, &text, code);
@@ -1554,6 +1560,54 @@ impl App {
         self.send_now(i, text, content);
     }
 
+    /// `/btw`: asks a one-off copy of this conversation a side question. It has
+    /// no tools, isn't saved, and never touches the session itself, so it works
+    /// while Claude is mid-reply and leaves no trace in the chat Claude sees.
+    fn btw(&mut self, i: usize, question: &str) {
+        let s = &mut self.sessions[i];
+        let idx = s.start_btw(question);
+        let mut cmd = tokio::process::Command::new(claude::claude_bin());
+        cmd.args(["-p", "--output-format", "json", "--no-session-persistence", "--max-turns", "1", "--tools", ""]);
+        cmd.args([
+            "--append-system-prompt",
+            "This is a quick side question (/btw) asked while the main work goes on. Answer it directly and briefly from the conversation and what you know; you have no tools here.",
+        ]);
+        if let Some(id) = &s.claude_id {
+            cmd.args(["--resume", id, "--fork-session"]);
+        }
+        if let Some(m) = &s.model {
+            cmd.args(["--model", m]);
+        }
+        cmd.current_dir(&s.cwd)
+            .env("DEN_NO_ALIAS", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let (sid, q, tx) = (s.sid, question.to_string(), self.tx.clone());
+        tokio::spawn(async move {
+            let answer = async {
+                let mut child = cmd.spawn().map_err(|e| format!("couldn't start claude: {e}"))?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stdin.write_all(q.as_bytes()).await;
+                }
+                let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
+                let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    if err.is_empty() { "no answer".to_string() } else { err }
+                })?;
+                let text = tools::s(&v, "result").trim().to_string();
+                if v.get("is_error").and_then(Value::as_bool) == Some(true) || text.is_empty() {
+                    return Err(if text.is_empty() { "no answer".into() } else { text });
+                }
+                Ok(text)
+            }
+            .await;
+            let _ = tx.send(AppEvent::Btw(sid, idx, answer));
+        });
+    }
+
     /// Runs `!command` in the user's shell, in the session's folder.
     fn run_shell(&mut self, i: usize, cmd: &str) {
         let s = &mut self.sessions[i];
@@ -1621,6 +1675,11 @@ impl App {
         match name {
             "reload" => self.request_reload(),
             "restart" => self.restart_claude(),
+            "btw" if arg.is_empty() => self.toast("usage: /btw <question> · answered on the side; Claude keeps working"),
+            "btw" => {
+                let i = self.active;
+                self.btw(i, arg);
+            }
             "mcp" if arg.is_empty() || arg == "manage" => {
                 let i = self.active;
                 self.open_screen(i, "/mcp", AfterScreen::McpStatus);

@@ -598,6 +598,36 @@ impl Session {
         i
     }
 
+    /// A `/btw` side question, answered beside the conversation.
+    pub fn start_btw(&mut self, question: &str) -> usize {
+        let i = self.push(Item::Tool(Tool {
+            name: "Btw".into(),
+            input: json!({"question": question}),
+            result: None,
+            state: ToolState::Running,
+            started: Instant::now(),
+            took: None,
+            sub_steps: 0,
+            waiting: false,
+            finished_at: None,
+        }));
+        self.entries[i].expanded = true;
+        self.scroll = 0;
+        i
+    }
+
+    pub fn finish_btw(&mut self, idx: usize, answer: Result<String, String>) {
+        let Some(Item::Tool(t)) = self.entries.get_mut(idx).map(|e| &mut e.item) else { return };
+        if t.name != "Btw" || t.state != ToolState::Running {
+            return;
+        }
+        t.state = if answer.is_ok() { ToolState::Ok } else { ToolState::Err };
+        t.result = Some(answer.unwrap_or_else(|e| e));
+        t.took = Some(t.started.elapsed());
+        t.finished_at = Some(Instant::now());
+        self.touch(idx);
+    }
+
     /// Fills in a finished `!command` and queues its output for Claude.
     pub fn finish_shell(&mut self, idx: usize, output: &str, code: i32) {
         let Some(Item::Tool(t)) = self.entries.get_mut(idx).map(|e| &mut e.item) else { return };
@@ -707,8 +737,10 @@ impl Session {
     fn stop_running_tools(&mut self, state: ToolState) {
         let mut touched = Vec::new();
         for (i, e) in self.entries.iter_mut().enumerate() {
+            // `!commands` and `/btw` run beside Claude; its turn ending doesn't stop them.
             if let Item::Tool(t) = &mut e.item
                 && t.state == ToolState::Running
+                && !matches!(t.name.as_str(), "Shell" | "Btw")
             {
                 t.state = state;
                 t.waiting = false;
